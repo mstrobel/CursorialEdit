@@ -44,8 +44,9 @@ public sealed record BlockListChange(
     /// <b>subset of <see cref="Reused"/></b> (their block identity and structure are intact) that the
     /// view must additionally re-realize; it is not a fifth partition bucket, so the
     /// Reused/Changed/Added/Removed partition of the new id set is unaffected. Empty on ordinary edits.
-    /// A debounced full reparse (<c>FullReparseScheduler</c>) reconciles these off-thread; this list is
-    /// the synchronous frame's signal that they need re-realizing before then.
+    /// The definition-bearing document was full-parsed this same frame (the producer's escalation), so
+    /// the fresh whole-document ASTs are already installed; this list is the signal telling the view
+    /// which Reused presenters to re-derive their inlines from.
     /// </summary>
     public IReadOnlyList<BlockId> Invalidated { get; init; } = [];
 }

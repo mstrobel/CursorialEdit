@@ -55,15 +55,18 @@ namespace CursorialEdit.Document.Model;
 /// An empty or all-blank window is one synthetic <see cref="BlockKind.Paragraph"/> block.
 /// </para>
 /// <para>
-/// <b>Document-global definitions (WP3, §2.2 step 4).</b> After every edit the producer reconciles a
-/// <see cref="DefinitionIndex"/> (link-reference + footnote definitions): a change to the definition set
-/// reports the referencing blocks as <see cref="BlockListChange.Invalidated"/> for the synchronous frame
-/// and — when enabled — schedules a debounced off-thread <see cref="FullReparseScheduler{TParse}"/> that
-/// refreshes those blocks' inlines against the whole document, epoch-validated (Decision 13).
+/// <b>Document-global definitions (WP3, §2.2 step 4).</b> Footnote and link-reference definitions
+/// resolve against the whole document, so a windowed sub-parse tiles and resolves them differently than
+/// a full parse. The producer therefore takes the synchronous full-parse path for any document that
+/// contains (or any edit that introduces) such a definition — <see cref="SegmentForEdit"/>'s escalation
+/// — which keeps references correct <i>immediately</i>, this frame. A definition-set change additionally
+/// reports the referencing (Reused) blocks as <see cref="BlockListChange.Invalidated"/> so the view
+/// re-derives their inlines against the fresh ASTs the same-frame full parse already installed. This
+/// supersedes the debounced off-thread scheduler the earlier design carried: definition-free documents
+/// stay windowed (§13); definition-bearing ones full-parse per keystroke (the plan's sanctioned degraded
+/// class, within the §13 hard ceiling for realistic documents) with no async path or off-thread state.
 /// </para>
-/// <para>All members are UI-thread-only, like the controller and buffer they observe (the full-reparse
-/// scheduler's off-thread parse and epoch-guarded post-back are the sole exception, and never touch the
-/// buffer off-thread).</para>
+/// <para>All members are UI-thread-only, like the controller and buffer they observe.</para>
 /// </remarks>
 public sealed class MarkdigBlockProducer : IDisposable
 {
@@ -71,7 +74,6 @@ public sealed class MarkdigBlockProducer : IDisposable
     private readonly IDocumentBuffer _buffer;
     private readonly MarkdownPipeline _pipeline;
     private readonly DefinitionIndex _definitions = new();
-    private readonly FullReparseScheduler<MarkdownDocument>? _scheduler;
     private long _nextId = 1;
     private bool _disposed;
 
@@ -82,22 +84,10 @@ public sealed class MarkdigBlockProducer : IDisposable
     /// </summary>
     /// <param name="controller">The edit controller whose buffer is parsed and observed.</param>
     /// <param name="pipeline">The pipeline to parse with; defaults to <see cref="MarkdownPipelineFactory.Shared"/> (the one pinned configuration).</param>
-    /// <param name="fullReparseTimeProvider">
-    /// When non-<see langword="null"/>, enables the debounced off-thread full reparse for
-    /// document-global definition changes, clocked by this provider (Decision 3 step 4 / Decision 13).
-    /// When <see langword="null"/> (the default) the producer still reports
-    /// <see cref="BlockListChange.Invalidated"/> synchronously but schedules no async reparse — the
-    /// document-core default, with no ambient timer.
-    /// </param>
-    /// <param name="fullReparsePost">Marshals the full-reparse apply back to the UI thread; defaults to synchronous inline. Hosts pass <c>UIDispatcher.InvokeAsync</c>.</param>
-    /// <param name="fullReparseDebounce">The full-reparse debounce interval; defaults to <see cref="FullReparseScheduler{TParse}.DefaultDebounceInterval"/>.</param>
     /// <exception cref="ArgumentNullException"><paramref name="controller"/> is <see langword="null"/>.</exception>
     public MarkdigBlockProducer(
         EditController controller,
-        MarkdownPipeline? pipeline = null,
-        TimeProvider? fullReparseTimeProvider = null,
-        Action<Action>? fullReparsePost = null,
-        TimeSpan? fullReparseDebounce = null)
+        MarkdownPipeline? pipeline = null)
     {
         ArgumentNullException.ThrowIfNull(controller);
 
@@ -116,17 +106,6 @@ public sealed class MarkdigBlockProducer : IDisposable
 
         _definitions.Update(Blocks, _buffer); // seed the definition signatures from the initial parse
 
-        if (fullReparseTimeProvider is not null)
-        {
-            _scheduler = new FullReparseScheduler<MarkdownDocument>(
-                capture: () => new ReparseRequest(_buffer.GetText(), _buffer.Epoch),
-                parse: text => Markdown.Parse(text, _pipeline),
-                apply: RunFullReparse,
-                timeProvider: fullReparseTimeProvider,
-                debounceInterval: fullReparseDebounce,
-                post: fullReparsePost);
-        }
-
         controller.Changed += OnSpliced;
     }
 
@@ -135,13 +114,9 @@ public sealed class MarkdigBlockProducer : IDisposable
 
     /// <summary>
     /// Raised once per applied splice, after <see cref="Blocks"/> is consistent — the reconciliation
-    /// feed WP7's view applies presenter reuse/invalidation from. Also raised (when the full-reparse
-    /// scheduler is enabled) for a debounced document-global reconcile.
+    /// feed WP7's view applies presenter reuse/invalidation from.
     /// </summary>
     public event Action<BlockListChange>? Changed;
-
-    /// <summary>The debounced full-reparse scheduler, or <see langword="null"/> when async scheduling is disabled.</summary>
-    internal FullReparseScheduler<MarkdownDocument>? Scheduler => _scheduler;
 
     /// <summary>The document-global definition index (link-reference + footnote definitions).</summary>
     internal DefinitionIndex Definitions => _definitions;
@@ -174,7 +149,6 @@ public sealed class MarkdigBlockProducer : IDisposable
 
         _disposed = true;
         _controller.Changed -= OnSpliced;
-        _scheduler?.Dispose();
     }
 
     // ───────────────────────────── re-adoption ─────────────────────────────
@@ -402,12 +376,23 @@ public sealed class MarkdigBlockProducer : IDisposable
 
         var change = new BlockListChange(reused, changed, added, removed, lineShift, result.Epoch);
         if (definitionDelta.SetChanged && definitionDelta.InvalidatedBlocks.Count > 0)
-            change = change with { Invalidated = definitionDelta.InvalidatedBlocks };
+        {
+            // A definition-set change re-renders every REUSED block that references it (its source is
+            // unchanged, so the diff classifies it Reused, but its rendered inlines resolved against
+            // the old definition). Filter to Reused so the documented invariant holds — Invalidated ⊆
+            // Reused, disjoint from Changed/Added (which the view re-renders anyway). A referencing
+            // block that was itself Changed/Added this edit needs no separate signal.
+            //
+            // NOTE: definition-bearing documents take the synchronous full-parse path (SegmentForEdit's
+            // escalation), so the referencing blocks' fresh Markdig ASTs are already in Blocks this
+            // frame — Invalidated tells the view which Reused presenters to re-derive, no async reparse.
+            var reusedSet = new HashSet<BlockId>(reused);
+            var invalidated = definitionDelta.InvalidatedBlocks.Where(reusedSet.Contains).ToList();
+            if (invalidated.Count > 0)
+                change = change with { Invalidated = invalidated };
+        }
 
         Changed?.Invoke(change);
-
-        if (definitionDelta.SetChanged)
-            _scheduler?.Schedule();
     }
 
     // ───────────────────────────── window planning + parse ─────────────────────────────
@@ -776,57 +761,6 @@ public sealed class MarkdigBlockProducer : IDisposable
         }
 
         return breaks;
-    }
-
-    // ───────────────────────────── document-global full reparse ─────────────────────────────
-
-    /// <summary>
-    /// The full-reparse scheduler's UI-thread apply (Decision 3 step 4 / Decision 13): reconciles a
-    /// document parsed off-thread against the live blocks, refreshing the inline ASTs of every block
-    /// that references a definition so their reference links / footnotes resolve against the whole
-    /// document. Rejected (returns <see langword="false"/>) when a newer edit has landed —
-    /// <paramref name="epoch"/> no longer matches the buffer — so a stale parse never touches the model.
-    /// </summary>
-    private bool RunFullReparse(MarkdownDocument parsed, long epoch)
-    {
-        if (_disposed || _buffer.Epoch != epoch)
-            return false;
-
-        // The text is unchanged since capture (epoch matches), so the full parse tiles identically to
-        // the live blocks. Refresh only the referencing blocks with fresh (whole-document) ASTs; keep
-        // every other instance to avoid churn.
-        var referencing = _definitions.ReferencingBlocks(Blocks, _buffer);
-        if (referencing.Count == 0)
-            return true;
-
-        var freshSegs = TileWindow(parsed, parseBaseOffset: 0, firstLine: 0, lastLine: _buffer.LineCount);
-        if (freshSegs.Count != Blocks.Count)
-            return true; // defensive: tiling drift (never expected when the fuzzer's invariant holds)
-
-        var refreshed = new List<BlockId>();
-        for (var i = 0; i < freshSegs.Count; i++)
-        {
-            var current = Blocks[i];
-            var seg = freshSegs[i];
-            if (!referencing.Contains(current.Id) || current.Kind != seg.Kind || current.LineCount != seg.LineCount)
-                continue;
-
-            Blocks.ReplaceRange(i, 1, [CreateBlock(current.Id, seg)]); // same id, fresh AST
-            refreshed.Add(current.Id);
-        }
-
-        if (refreshed.Count == 0)
-            return true;
-
-        var reused = new List<BlockId>(Blocks.Count - refreshed.Count);
-        for (var i = 0; i < Blocks.Count; i++)
-        {
-            if (!refreshed.Contains(Blocks[i].Id))
-                reused.Add(Blocks[i].Id);
-        }
-
-        Changed?.Invoke(new BlockListChange(reused, refreshed, [], [], LineShift: 0, epoch));
-        return true;
     }
 
     [Conditional("DEBUG")]

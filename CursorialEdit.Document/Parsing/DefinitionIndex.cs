@@ -27,8 +27,9 @@ public readonly record struct DefinitionDelta(bool SetChanged, IReadOnlyList<Blo
 /// (architecture §2.2 step 4 / Decision 3). Because a definition (link reference, footnote) can change
 /// the rendering of a block anywhere in the document without changing any block's <i>structure</i>, an
 /// edit that changes the definition set must invalidate exactly the blocks that reference the changed
-/// labels — their cached inline runs are stale — and the frame is served from the windowed result while
-/// a debounced full reparse (<see cref="FullReparseScheduler"/>) reconciles the rest.
+/// labels — their cached inline runs are stale. Definition-bearing documents take the producer's
+/// synchronous full-parse path, so the fresh ASTs are installed the same frame; this index computes
+/// which referencing blocks to re-realize.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -64,8 +65,9 @@ public abstract class DefinitionTable
                 continue;
 
             string source = BlockSource(blocks, buffer, i);
-            if (TryReadSignature(source, out string? label, out string? signature))
-                next[label] = signature; // last definition of a label wins, matching Markdig
+            if (TryReadSignature(source, out string? label, out string? signature) && !next.ContainsKey(label))
+                next[label] = signature; // FIRST definition of a label wins, matching Markdig/CommonMark
+                                         // — so editing the effective (first) duplicate is detected as a change
         }
 
         var changedLabels = DiffLabels(_signatures, next);
@@ -321,10 +323,11 @@ public sealed class DefinitionIndex
         if (!linkDelta.SetChanged && !footnoteDelta.SetChanged)
             return DefinitionDelta.None;
 
+        var seen = new HashSet<BlockId>(linkDelta.InvalidatedBlocks);
         var union = new List<BlockId>(linkDelta.InvalidatedBlocks);
         foreach (var id in footnoteDelta.InvalidatedBlocks)
         {
-            if (!union.Contains(id))
+            if (seen.Add(id))
                 union.Add(id);
         }
 
