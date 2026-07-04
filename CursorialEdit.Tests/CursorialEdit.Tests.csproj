@@ -35,6 +35,17 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!--
+    M2.WP1 conformance corpus: the official CommonMark spec.json test suite (652 examples,
+    section-tagged), vendored under Conformance/corpus and embedded so the span oracle and the
+    conformance reporter can read it without file-path assumptions. The only csproj change WP1 makes
+    (the sanctioned "corpus files as content" exception); the curated GFM/extension corpus rides the
+    default *.cs compile glob and needs no entry here.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Conformance/corpus/commonmark-spec.json" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\CursorialEdit\CursorialEdit.csproj" />
     <ProjectReference Include="..\CursorialEdit.Document\CursorialEdit.Document.csproj" />
