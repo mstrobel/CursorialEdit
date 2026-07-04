@@ -100,11 +100,13 @@ public sealed class Block
     public int LineCount { get; }
 
     /// <summary>
-    /// The backing Markdig top-level block — the entry point for span and inline-AST access
-    /// (presenters may traverse it; that is sanctioned app-side Markdig use, never promotable).
+    /// The backing Markdig top-level block — the entry point for span and inline-AST access, used
+    /// only WITHIN this assembly to project <see cref="InlineRuns"/>. <b>Internal by design</b>: the
+    /// app (presenters) consumes the block-relative <see cref="InlineRuns"/>, never the Markdig AST,
+    /// so Markdig stays quarantined out of the app assembly (enforced by <c>ArchitectureTests</c>).
     /// <see langword="null"/> for a degenerate (non-Markdig) block.
     /// </summary>
-    public MdBlock? MarkdigBlock { get; }
+    internal MdBlock? MarkdigBlock { get; }
 
     /// <summary>
     /// The absolute UTF-16 offset of this block's first source line <b>at the parse that produced

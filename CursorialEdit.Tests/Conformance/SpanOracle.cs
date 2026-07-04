@@ -234,7 +234,14 @@ public static class SpanOracle
             case HtmlInline html:
             {
                 if (!Resolve(src, html.Span, out string slice))
-                    return; // rare synthetic HTML inline with no source; nothing to reproduce.
+                {
+                    // A genuinely synthetic inline (empty/negative span) has no source to reproduce.
+                    // A NON-empty span that overshoots the source is a real out-of-bounds precise
+                    // span (it would crash WP5's Substring) — flag it, like every other construct.
+                    if (IsPresentButUnresolvable(src, html.Span))
+                        obs.Add(Absent(docId, HtmlInlineConstruct, html.Span));
+                    return;
+                }
 
                 string tag = html.Tag ?? string.Empty;
                 bool ok = string.Equals(slice, tag, StringComparison.Ordinal) && slice.StartsWith('<');
@@ -275,7 +282,14 @@ public static class SpanOracle
             case LiteralInline lit:
             {
                 if (!Resolve(src, lit.Span, out string slice))
-                    return; // synthetic literal (e.g. inserted text) — no source to reproduce.
+                {
+                    // Synthetic literal (empty/negative span, e.g. inserted text) — nothing to
+                    // reproduce. But a non-empty span that overshoots the source is a defective
+                    // precise span (the load-bearing case for run maps) — flag it.
+                    if (IsPresentButUnresolvable(src, lit.Span))
+                        obs.Add(Absent(docId, Literal, lit.Span));
+                    return;
+                }
 
                 string content = lit.Content.ToString();
                 bool ok = ReproducesLiteral(slice, content);
@@ -400,6 +414,14 @@ public static class SpanOracle
         slice = src.Substring(span.Start, span.Length);
         return true;
     }
+
+    /// <summary>
+    /// A span that CLAIMS a source range (non-empty, non-negative start and length) but does not fit
+    /// the source — the out-of-bounds precise-span defect that would crash a <c>Substring</c> consumer.
+    /// Distinguished from a genuinely synthetic span (empty/negative), which is legitimately skipped.
+    /// </summary>
+    private static bool IsPresentButUnresolvable(string src, SourceSpan span) =>
+        !span.IsEmpty && span.Start >= 0 && span.Length > 0 && span.Start + span.Length > src.Length;
 
     private static T? FirstInline<T>(string text, MarkdownPipeline pipeline) where T : Inline =>
         Markdown.Parse(text, pipeline).Descendants().OfType<T>().FirstOrDefault();

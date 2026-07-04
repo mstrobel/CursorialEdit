@@ -278,4 +278,53 @@ public sealed class ReAdoptionTests
         Assert.Equal(kindsBefore, h.Kinds());
         BlockDiffOracle.Verify(h, before, h.LastChange!);
     }
+
+    // ───────────────────────────── identity migration (review) ─────────────────────────────
+
+    /// <summary>
+    /// Review finding: content-hash must never hand an unchanged block's id to a byte-identical twin.
+    /// Pasting an identical copy of a block ABOVE it leaves the untouched ORIGINAL (which still has its
+    /// unmodified lines) holding the id; the pasted copy — all lines new — is a fresh Added block.
+    /// </summary>
+    [Fact]
+    public void PastingIdenticalTwin_LeavesTheUntouchedOriginalHoldingItsId()
+    {
+        var h = BlockHarness.Create("X\n\nZ");
+        var ids = h.Ids(); // [X-id, Z-id]
+        var before = h.Snapshot();
+
+        var change = h.Insert(new TextPosition(0, 0), "X\n\n", EditKind.Paste); // identical copy at top
+
+        BlockDiffOracle.Verify(h, before, change);
+        Assert.Equal([BlockKind.Paragraph, BlockKind.Paragraph, BlockKind.Paragraph], h.Kinds());
+        Assert.Equal(ids[0], h.Blocks[1].Id);   // the ORIGINAL X (shifted to index 1) kept its id
+        Assert.Single(change.Added);             // the pasted copy is the only new block
+        Assert.Equal(change.Added[0], h.Blocks[0].Id); // ...and it is the top copy, not the original
+        Assert.Contains(ids[1], h.Ids());        // Z kept its id
+    }
+
+    /// <summary>
+    /// Review finding (the mirror artifact): a segment of purely-new content whose last line merged
+    /// with an old line's terminator during the splice (so that line inherited the old version stamp)
+    /// must not anchor-steal an EARLIER block's id. Inserting new blocks after "head" leaves head's id
+    /// on head, never on the trailing new "middle" paragraph.
+    /// </summary>
+    [Fact]
+    public void NewContentMergedWithAnOldTerminator_DoesNotStealAnEarlierBlockId()
+    {
+        var h = BlockHarness.Create("head\n\ntail");
+        var ids = h.Ids(); // [head-id, tail-id]
+        var before = h.Snapshot();
+
+        var change = h.Insert(new TextPosition(0, 4), "\n\n# Injected\n\nmiddle", EditKind.Paste);
+
+        BlockDiffOracle.Verify(h, before, change);
+        Assert.Equal(ids[0], h.Blocks[0].Id);       // head kept its id (not migrated to "middle")
+        Assert.DoesNotContain(ids[0], change.Added); // head's id is not reported as newly added
+        Assert.Contains(ids[1], h.Ids());            // tail kept its id
+        // The injected heading + middle paragraph are both fresh ids.
+        Assert.Equal(2, change.Added.Count);
+        Assert.Contains(change.Added, id => id == h.Blocks[1].Id); // heading
+        Assert.Contains(change.Added, id => id == h.Blocks[2].Id); // middle
+    }
 }

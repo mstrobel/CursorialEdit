@@ -54,3 +54,19 @@ dedicated pass or until the named milestone touches the area anyway.
   opening a second large file, the viewport can retain the prior scroll row with the origin caret
   off-screen until the first caret move calls `EnsureVisible`. A scroll-to-top on attach fixes it.
   *(candidate EditorControl.cs:220 — confirm/fix when M6 wires real open UX)*
+
+## M2 parse foundation (WP1/WP2 review — perf cleanups, not correctness)
+
+Deferred from the WP1+WP2 review (the two correctness bugs — content-hash identity migration and the
+span-oracle literal/HTML blind spot — were fixed in the review-fix commit; these are efficiency/hygiene):
+
+- **MarkdigBlockProducer residue pass** — `UnmatchedCount` rescans both match arrays to their end on
+  each kind-mismatch step (O(oldWindow·newWindow)); two running counters make it linear.
+- **MarkdigBlockProducer hashes each window block 2–3×/edit** (pass-1 match, `CreateBlock`, and the
+  Reused/Changed check) — cache the per-segment hash in an array indexed by j; reuse `CreateBlock`'s.
+- **`CreateBlock` iterates a block's lines twice** (`MaxVersion` then `HashLines`) — fuse into one walk.
+- **ConformanceReporter re-runs `SpanOracle.Inspect` over every GFM doc** already inspected by RunOracle
+  — pass the observations through instead of re-parsing.
+- **`ConformanceReportTests` writes `docs/conformance.md` into the working tree as a test side effect** —
+  acceptable (the doc is a checked-in generated artifact) but gate the write behind an env flag or move
+  to a `[Trait("Category","Conformance")]`-only path so a plain `dotnet test` doesn't dirty the tree.
