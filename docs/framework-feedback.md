@@ -207,8 +207,13 @@ might become necessary"):** extend the ladder to **Glyph (`caps-nerdfont`) → I
 Emoji (new `caps-emoji`) → Text (`caps-unicode` floor)**. Emoji-above-Text wins on emoji-capable,
 image-less terminals (e.g. Apple Terminal); PNG stays above emoji because it's theme-controllable and
 width-exact. Design constraints:
-1. `caps-emoji` is a **user-declared opt-in, default absent** (mirrors `caps-nerdfont`'s no-tofu-first-run
-   posture) until a glyph-capability source exists.
+1. ~~`caps-emoji` is a **user-declared opt-in, default absent** (mirrors `caps-nerdfont`'s no-tofu-first-run
+   posture) until a glyph-capability source exists.~~ **Revised (maintainer decision, Mike, 2026-07-04):
+   `caps-emoji` is a user **opt-OUT, default present**. Rationale: emoji coverage in modern terminals is
+   near-universal — unlike Nerd Font PUA coverage, where the default-absent no-tofu posture rightly stays
+   (`caps-nerdfont` remains opt-in; the asymmetry is deliberate) — and grid safety is owned by the Icon
+   element's 2-cell emoji measurement (constraint 2), not by hiding the tier. The `capabilities.emoji` key
+   keeps its boolean shape: absent/`true` = enabled, `false` disables (tri-state overlay unaffected).
 2. **Width contract per tier**: the Icon must measure at its *resolved* tier's width (emoji = 2 cells,
    others typically 1) so Bars/toolbar layouts budget correctly; the §18.4 confirmation-render width
    ruler applies to the emoji tier too (VS16 sequences especially).
@@ -356,7 +361,10 @@ suite 2784/2784 green (Configuration section 59 new tests); Bars/Xaml suites gre
 inbox `System.Text.Json` reader only — no new deps), `IUserConfigurationPathProvider`, `UserOptionKeys`,
 `CapabilityOverrides` record (per-protocol graphics axes + motion + kitty-keyboard; color-tier and
 NerdFont/emoji deliberately excluded — they have native opt-ins), `UIApplication.EmojiAvailable` +
-`caps-emoji` stamping + the **Icon fourth tier (FB-15) implemented** (Glyph→Image→Emoji→Text, 2-cell
+`caps-emoji` stamping (**posture flipped on-branch to opt-OUT/default-present, maintainer decision
+2026-07-04** — near-universal terminal emoji coverage, unlike Nerd Font PUA coverage where opt-in stays;
+grid safety owned by the Icon's 2-cell emoji measure, not tier hiding; `capabilities.emoji` stays a
+boolean, `false` disables) + the **Icon fourth tier (FB-15) implemented** (Glyph→Image→Emoji→Text, 2-cell
 emoji measure incl. VS16), `EffectiveCapabilities` sharing the stamping fold (renegotiation survival by
 construction), `UIApplicationBuilder.WithUserConfiguration(...)`, wired keys (theme base, tier, NerdFont,
 emoji, overrides, images-disable, AnimationsEnabled), reserved keys documented. Review notes for the
