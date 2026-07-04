@@ -74,13 +74,12 @@ internal sealed class DocumentCaret : ISelectionSource
     private bool _endAffinity;
 
     /// <summary>
-    /// The block-relative selection range each block (by stable id) painted in the last repaint pass.
-    /// Keyed by identity and stored <i>relative</i> to the block, so the diff is immune to a splice in
-    /// an earlier block shifting later blocks' absolute offsets (a stale absolute compare missed a
-    /// block whose overlay had to change — the bug this replaced) while still catching a selection
-    /// that grew or shrank <i>within</i> a block (which a membership-only set would miss).
+    /// The blocks (by stable id) that painted a selection overlay in the last repaint pass. Keyed
+    /// by identity, not absolute offset, so the enter/leave diff is immune to a splice in an earlier
+    /// block shifting later blocks' offsets (that shift would make a stale absolute-offset compare
+    /// miss a block whose overlay must clear — the bug this replaced).
     /// </summary>
-    private readonly Dictionary<BlockId, (int Start, int End)> _selectionPainted = [];
+    private readonly HashSet<BlockId> _selectionPainted = [];
 
     /// <summary>Creates the caret at the document origin.</summary>
     public DocumentCaret(EditController controller, BlockViewBridge bridge, IContentRowMap rows)
@@ -649,12 +648,11 @@ internal sealed class DocumentCaret : ISelectionSource
     {
         var (newStart, newEnd) = CurrentAbsoluteSelection();
 
-        // Diff each block's block-relative selection range against what it last painted, keyed by id.
-        // Both ranges are relative to the block's current offsets, so nothing compares across a
-        // coordinate shift; the range (not just membership) is compared, so a selection growing or
-        // shrinking within a block still invalidates it. A block that left the realized set is not
-        // visited — it carries no on-screen overlay — and drops from the map below.
-        var previous = _selectionPainted.Count == 0 ? null : new Dictionary<BlockId, (int, int)>(_selectionPainted);
+        // Diff by identity: a block flips its overlay when its now-selected state differs from last
+        // pass. Both the intersection test and the membership use post-splice state, so nothing
+        // compares across a coordinate shift. A block that left the realized set is simply not
+        // visited — it carries no on-screen overlay to clear — and drops from the set below.
+        var stillPainted = _selectionPainted.Count == 0 ? null : new HashSet<BlockId>(_selectionPainted);
         _selectionPainted.Clear();
 
         foreach (var (id, presenter) in _bridge.RealizedPresenters)
@@ -663,19 +661,15 @@ internal sealed class DocumentCaret : ISelectionSource
             if (index < 0)
                 continue; // a just-removed block awaiting the panel's teardown sweep
 
-            var now = Intersect(newStart, newEnd, BlockStartOffset(index), BlockEndOffset(index));
-            (int, int)? was = previous is not null && previous.TryGetValue(id, out var prev) ? prev : null;
+            int blockStart = BlockStartOffset(index);
+            int blockEnd = BlockEndOffset(index);
+            bool nowSelected = Intersect(newStart, newEnd, blockStart, blockEnd) != (0, 0);
+            bool wasSelected = stillPainted?.Remove(id) ?? false;
 
-            if (now != (0, 0))
-            {
-                if (was != now)
-                    presenter.InvalidateVisual();
-                _selectionPainted[id] = now;
-            }
-            else if (was is not null)
-            {
-                presenter.InvalidateVisual(); // the overlay cleared
-            }
+            if (nowSelected != wasSelected)
+                presenter.InvalidateVisual();
+            if (nowSelected)
+                _selectionPainted.Add(id);
         }
 
         Updated?.Invoke();

@@ -342,6 +342,15 @@ public sealed class EditorShell : DockPanel
     /// </summary>
     private bool OpenFileCore(string path, TimeProvider? timeProvider, out string? error)
     {
+        // A directory is not openable and must not become a phantom new document (File.Exists is
+        // false for a directory, so without this it would fall into the create-new path and only
+        // fail later at save). Spec §10.4 defers directory arguments.
+        if (Directory.Exists(path))
+        {
+            error = $"cannot open a directory: {path}";
+            return false;
+        }
+
         DocumentFile file;
         string? note = null;
         try

@@ -211,6 +211,20 @@ public sealed class DocumentFile
                 stream.Flush(flushToDisk: true); // the temp is durable before it becomes the document
             }
 
+            // The temp inherits the process umask, so a plain rename would silently strip the
+            // destination's mode (execute bit, group-write, setgid). Carry the existing file's
+            // POSIX mode onto the temp before it becomes the document. Windows has no unix mode
+            // (GetUnixFileMode throws) — skipped there. NOTE: an atomic temp-then-rename replaces
+            // the inode, so it inherently breaks hard links to the destination (the other names
+            // keep the pre-save content) — the standard trade-off for a crash-safe save; a
+            // link-preserving in-place mode is deferred.
+            if (!OperatingSystem.IsWindows() && File.Exists(Path))
+            {
+                try { File.SetUnixFileMode(temp, File.GetUnixFileMode(Path)); }
+                catch (UnauthorizedAccessException) { } // best-effort — never fail a save over mode
+                catch (IOException) { }
+            }
+
             File.Move(temp, Path, overwrite: true);
         }
         catch
