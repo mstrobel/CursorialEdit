@@ -1,0 +1,12 @@
+bin/
+obj/
+!generated/**
+!**/generated/**
+.DS_Store
+/packages/
+riderModule.iml
+/_ReSharper.Caches/
+.idea/
+*.sln.DotSettings.user
+.claude/
+.scratch/
