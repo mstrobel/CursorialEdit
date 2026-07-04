@@ -35,4 +35,17 @@ public sealed record BlockListChange(
     IReadOnlyList<BlockId> Added,
     IReadOnlyList<BlockId> Removed,
     int LineShift,
-    long Epoch);
+    long Epoch)
+{
+    /// <summary>
+    /// Blocks whose <b>source is unchanged</b> yet whose cached inline runs are stale because a
+    /// document-global definition they reference (a link-reference or footnote definition — see
+    /// <c>DefinitionIndex</c>) changed elsewhere in the document (architecture §2.2 step 4). This is a
+    /// <b>subset of <see cref="Reused"/></b> (their block identity and structure are intact) that the
+    /// view must additionally re-realize; it is not a fifth partition bucket, so the
+    /// Reused/Changed/Added/Removed partition of the new id set is unaffected. Empty on ordinary edits.
+    /// A debounced full reparse (<c>FullReparseScheduler</c>) reconciles these off-thread; this list is
+    /// the synchronous frame's signal that they need re-realizing before then.
+    /// </summary>
+    public IReadOnlyList<BlockId> Invalidated { get; init; } = [];
+}

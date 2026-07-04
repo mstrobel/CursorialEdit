@@ -56,11 +56,12 @@ public sealed class Block
     /// <param name="lineCount">The number of source lines this block owns (≥ 1).</param>
     /// <param name="markdigBlock">The backing Markdig top-level block (for span/inline access); never <see langword="null"/> here.</param>
     /// <param name="sourceStartOffset">Absolute UTF-16 offset of this block's first source line at parse time — the origin block-relative inline offsets are measured from (Decision 8).</param>
+    /// <param name="sourceLength">The block's serialized source length in UTF-16 code units (terminators included) — the bound every realized inline run is clamped within.</param>
     /// <param name="contentStamp">The maximum line <see cref="Buffer.Line.Version"/> over this block's lines at (re)parse — the re-adoption input (Decision 4).</param>
     /// <param name="contentHash">An order-sensitive hash of this block's source text — the secondary re-adoption check for moved-but-unchanged blocks (never the primary key).</param>
     /// <param name="headingLevel">The heading level (1–6) when <paramref name="kind"/> is <see cref="BlockKind.Heading"/>; otherwise <see langword="null"/>.</param>
     /// <param name="fenceInfo">The fence info string when <paramref name="kind"/> is <see cref="BlockKind.FencedCode"/> (or the math fence); otherwise <see langword="null"/>.</param>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="lineCount"/> &lt; 1.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="lineCount"/> &lt; 1, or <paramref name="sourceLength"/> &lt; 0.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="markdigBlock"/> is <see langword="null"/>.</exception>
     public Block(
         BlockId id,
@@ -68,12 +69,14 @@ public sealed class Block
         int lineCount,
         MdBlock markdigBlock,
         int sourceStartOffset,
+        int sourceLength,
         int contentStamp,
         ulong contentHash,
         int? headingLevel,
         string? fenceInfo)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(lineCount, 1);
+        ArgumentOutOfRangeException.ThrowIfNegative(sourceLength);
         ArgumentNullException.ThrowIfNull(markdigBlock);
 
         Id = id;
@@ -81,6 +84,7 @@ public sealed class Block
         LineCount = lineCount;
         MarkdigBlock = markdigBlock;
         SourceStartOffset = sourceStartOffset;
+        SourceLength = sourceLength;
         ContentStamp = contentStamp;
         ContentHash = contentHash;
         HeadingLevel = headingLevel;
@@ -116,6 +120,15 @@ public sealed class Block
     /// the block's <i>current</i> start line from the list's prefix sums.
     /// </summary>
     public int SourceStartOffset { get; }
+
+    /// <summary>
+    /// The block's serialized source length in UTF-16 code units (terminators included). Every realized
+    /// <see cref="InlineRun"/> is clamped within <c>[0, SourceLength)</c>, so a run projected from the
+    /// Markdig AST that points outside this block — a Markdig precise-span quirk, or a document-global
+    /// construct (footnote/reference) whose <c>Descendants()</c> surfaces foreign inlines — is dropped
+    /// rather than handed to the run map as an out-of-bounds slice. Zero for a degenerate block.
+    /// </summary>
+    public int SourceLength { get; }
 
     /// <summary>
     /// The maximum line <see cref="Buffer.Line.Version"/> over this block's lines, recorded at the
@@ -179,9 +192,19 @@ public sealed class Block
             if (span.IsEmpty || span.Length <= 0)
                 continue;
 
+            // Keep only runs that lie within this block's own serialized source. Descendants() on a node
+            // that links a document-global construct (a footnote/reference resolved to its definition
+            // elsewhere) or a container whose Markdig span exceeds its tile can surface foreign inlines
+            // pointing outside this block, and Markdig's precise spans can themselves overshoot on
+            // pathological input; a block-relative offset outside [0, SourceLength) is not part of this
+            // block's rendering, so drop it rather than emit an out-of-bounds slice.
+            int start = span.Start - SourceStartOffset;
+            if (start < 0 || start + span.Length > SourceLength)
+                continue;
+
             var kind = ClassifyInline(inline);
             if (kind is { } k)
-                runs.Add(new InlineRun(span.Start - SourceStartOffset, span.Length, k));
+                runs.Add(new InlineRun(start, span.Length, k));
         }
 
         return runs;
