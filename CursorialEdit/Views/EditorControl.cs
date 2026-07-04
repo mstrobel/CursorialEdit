@@ -1,0 +1,748 @@
+using Cursorial.Input;
+using Cursorial.Output;
+using Cursorial.UI;
+using Cursorial.UI.Controls;
+using Cursorial.UI.Input;
+
+using CursorialEdit.Document.Editing;
+
+namespace CursorialEdit.Views;
+
+/// <summary>
+/// The editor's document surface control (architecture Decision 6): a <see cref="Control"/> that
+/// templates its <b>own</b> <see cref="ScrollViewer"/> whose scroll-content-presenter content is a
+/// <see cref="DocumentPanel"/>. The control is the sole focusable element of the surface; block
+/// presenters are inert visuals — all keyboard, text, and mouse input routes here.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <see cref="HandlesScrolling"/> is <see langword="true"/> so the templated
+/// <see cref="ScrollViewer"/> leaves keyboard scroll navigation to this control — the framework
+/// gate checks <c>TemplatedParent</c> (<c>ScrollViewer.cs:478</c>, <c>Control.cs:118-121</c>),
+/// which is exactly why the ScrollViewer must live in this control's template rather than wrap it
+/// loosely.
+/// </para>
+/// <para>
+/// <b>Two input modes.</b> Unattached (the WP3 spike/test path: <see cref="HeightSource"/>/<see
+/// cref="BlockFactory"/> set directly), the control keeps the spike keyboard scrolling and the
+/// <see cref="SetStubCaret"/> stub. Once <see cref="AttachDocument"/> installs the M1.WP8 caret,
+/// keys move the <b>caret</b> (scrolling follows via <see cref="ScrollViewer.EnsureVisible"/> —
+/// the SCP coerces), printable input funnels into <see cref="EditController.Apply"/>, and the
+/// mouse positions/extends the document selection.
+/// </para>
+/// <para>
+/// <b>Keymap (WP8 scope; FB-14 notes).</b> Arrows/Home/End/PageUp/PageDown (+Shift extends,
+/// +Ctrl word/document variants), Ctrl+A, Enter, Backspace, Delete, Tab (spec §6.3 indent —
+/// two spaces), Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo. On the legacy wire Ctrl+Shift+letter
+/// arrives with Shift dropped (FB-14: Ctrl+Shift+Z fires as Ctrl+Z = undo), so Ctrl+Y is the
+/// legacy-safe redo chord; the Ctrl+Shift+Z arm serves Kitty-capable wires. IME composition is
+/// out of M1.
+/// </para>
+/// <para>
+/// <b>Clipboard (M1.WP9; FB-3).</b> Ctrl+C / Ctrl+X copy/cut the selection's exact source range
+/// (interior terminators byte-exact) to <b>both</b> sinks: the terminal clipboard via
+/// <see cref="IClipboardService"/> (an OSC 52 write — fire-and-forget, gated internally on the
+/// negotiated <c>ClipboardWrite</c>) and the app-internal <see cref="Clipboard"/> store. Ctrl+V
+/// pastes from that store — the FB-3 fallback: terminal clipboard reads don't exist at 0.3.1, so
+/// Ctrl+V <b>cannot see content copied outside the app</b>; external content arrives as the
+/// terminal's own paste keybinding → bracketed paste → <see cref="TextInputEventArgs.FromPaste"/>,
+/// which <see cref="OnTextInput"/> applies as one literal splice. TextBox-parity aliases:
+/// Ctrl+Insert copy, Shift+Insert paste, Shift+Delete cut. Only safe-everywhere chords are bound
+/// (Ctrl+letter normalizes to <c>(Character, letter, Control)</c> on every wire — integration
+/// notes §4); plain-paste/alternate chords are M4/M5 work.
+/// </para>
+/// <para>
+/// <b>Ctrl+C is not SIGINT here (verified).</b> The framework session applies
+/// <c>stty … -isig …</c> (<c>PosixStdioTransports.Open</c>), so the TTY's ISIG processing is off
+/// for the session's lifetime: pressing Ctrl+C delivers the raw byte 0x03, which the VT
+/// interpreter's C0 map (0x01–0x1A → Ctrl+letter) decodes as <c>(Character, "c", Control)</c> —
+/// exactly the copy chord. The app's <c>SignalRestore</c> SIGINT path fires only for an outside
+/// <c>kill -INT</c>, never from this keystroke. Confirmed empirically by the wire-truth test
+/// (<c>Tests/Clipboard/SelectionTests</c>: raw 0x03 through the real <c>VtInputDevice</c> lands
+/// in the copy handler).
+/// </para>
+/// </remarks>
+[TemplatePart(PartScrollViewer, typeof(ScrollViewer), IsRequired = true)]
+[TemplatePart(PartDocumentPanel, typeof(DocumentPanel), IsRequired = true)]
+public class EditorControl : Control, IContentRowMap
+{
+    private const string PartScrollViewer = "PART_ScrollViewer";
+    private const string PartDocumentPanel = "PART_DocumentPanel";
+
+    // The control's own template (code-first; sealed on first instantiation and shared): a
+    // ScrollViewer around the DocumentPanel as the SCP's DIRECT content (host discovery requires it).
+    private static readonly ControlTemplate EditorTemplate = new(static ctx =>
+    {
+        var panel = new DocumentPanel();
+        ctx.RegisterName(PartDocumentPanel, panel);
+
+        var scrollViewer = new ScrollViewer
+        {
+            Content = panel,
+            Focusable = false,
+            IsTabStop = false,
+        };
+        ctx.RegisterName(PartScrollViewer, scrollViewer);
+
+        return scrollViewer;
+    })
+    {
+        TargetType = typeof(EditorControl),
+    };
+
+    private ScrollViewer? _scrollViewer;
+    private DocumentPanel? _panel;
+    private IBlockHeightSource? _heightSource;
+    private Func<int, UIElement>? _blockFactory;
+    private InternalClipboard _clipboard = InternalClipboard.Shared;
+    private bool _hasFocus;
+    private int _caretColumn;
+    private int _caretDocumentRow;
+
+    // ── WP8 document wiring (null until AttachDocument) ──
+    private DocumentCaret? _caret;
+    private EditController? _controller;
+    private BlockViewBridge? _bridge;
+    private bool _dragging;
+    private bool _publishing; // re-entrancy guard: publishing may refine heights, which re-publishes
+
+    /// <summary>Creates the control: focusable, with the self-templated ScrollViewer surface.</summary>
+    public EditorControl()
+    {
+        Focusable = true;
+        Template = EditorTemplate;
+    }
+
+    /// <summary>
+    /// The editor owns keyboard scroll navigation — its templated <see cref="ScrollViewer"/> must
+    /// not consume the arrow/page/home/end keys (the WPF-parity gate keyed on <c>TemplatedParent</c>).
+    /// </summary>
+    /// <remarks>
+    /// Declared <c>protected</c>, not <c>protected internal</c>: C# narrows a cross-assembly
+    /// <c>protected internal</c> override to its <c>protected</c> half (CS0507) — the framework's
+    /// gate reads the virtual slot either way.
+    /// </remarks>
+    protected override bool HandlesScrolling => true;
+
+    /// <summary>The block-height provider handed to the templated <see cref="DocumentPanel"/>.</summary>
+    public IBlockHeightSource? HeightSource
+    {
+        get => _heightSource;
+        set
+        {
+            VerifyAccess(); // fail fast pre-template too — the panel setter only guards post-expansion
+            _heightSource = value;
+            if (_panel is { } panel)
+                panel.HeightSource = value;
+        }
+    }
+
+    /// <summary>The block-element factory handed to the templated <see cref="DocumentPanel"/>.</summary>
+    public Func<int, UIElement>? BlockFactory
+    {
+        get => _blockFactory;
+        set
+        {
+            VerifyAccess();
+            _blockFactory = value;
+            if (_panel is { } panel)
+                panel.BlockFactory = value;
+        }
+    }
+
+    /// <summary>
+    /// The app-internal clipboard store this surface's copy/cut write and Ctrl+V reads — the
+    /// FB-3 read side (see <see cref="InternalClipboard"/> for the write-only-terminal split).
+    /// Defaults to <see cref="InternalClipboard.Shared"/> so every surface in the process shares
+    /// one clipboard; injectable so tests isolate with a fresh instance.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">The value is <see langword="null"/>.</exception>
+    public InternalClipboard Clipboard
+    {
+        get => _clipboard;
+        set
+        {
+            VerifyAccess();
+            _clipboard = value ?? throw new ArgumentNullException(nameof(value));
+        }
+    }
+
+    /// <summary>The templated ScrollViewer part (null before the first template expansion).</summary>
+    internal ScrollViewer? ScrollViewerPart => _scrollViewer;
+
+    /// <summary>The templated DocumentPanel part (null before the first template expansion).</summary>
+    internal DocumentPanel? DocumentPanelPart => _panel;
+
+    /// <summary>The installed document caret (test observability); null until <see cref="AttachDocument"/>.</summary>
+    internal DocumentCaret? DocumentCaretPart => _caret;
+
+    // ───────────────────────────── the WP8 attachment seam ─────────────────────────────
+
+    /// <summary>
+    /// Attaches a wired document pipeline to this surface — <b>the</b> seam the application shell
+    /// calls (after M1.WP8 lands, <c>EditorShell.WireDocument</c> hands its freshly built
+    /// controller + bridge here instead of setting <see cref="HeightSource"/>/<see cref="BlockFactory"/>
+    /// itself; the orchestrator wires that call in after this wave). It installs the bridge as the
+    /// panel's height/presenter source and replaces the WP3 stub caret with the real
+    /// source-anchored caret + selection + typing input path.
+    /// </summary>
+    /// <remarks>
+    /// Re-attaching (the open-file path) replaces everything: swapping the factory de-realizes
+    /// every presenter of the previous document, the previous caret/selection is discarded, and
+    /// the caret starts at the new document's origin. The raw <see cref="HeightSource"/>/<see
+    /// cref="BlockFactory"/> properties keep working for the stub/spike path — a control that was
+    /// never attached behaves exactly as before WP8.
+    /// </remarks>
+    /// <param name="controller">The document's single mutation funnel (undo, coalescing, caret-echo contract).</param>
+    /// <param name="bridge">The pipeline↔surface bridge serving heights, run maps, and presenters over the same document.</param>
+    /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
+    public void AttachDocument(EditController controller, BlockViewBridge bridge)
+    {
+        ArgumentNullException.ThrowIfNull(controller);
+        ArgumentNullException.ThrowIfNull(bridge);
+        VerifyAccess();
+
+        DetachDocument();
+
+        _controller = controller;
+        _bridge = bridge;
+
+        // Factory first: swapping it de-realizes every presenter of the previous document, so the
+        // height-source swap that follows reconciles from a clean slate (the WireDocument order).
+        BlockFactory = bridge.CreatePresenter;
+        HeightSource = bridge;
+
+        _caret = new DocumentCaret(controller, bridge, this);
+        bridge.SelectionSource = _caret;
+        _caret.Updated += OnCaretUpdated;
+        bridge.HeightsChanged += OnDocumentHeightsChanged;
+
+        if (_hasFocus)
+            PublishCaret();
+    }
+
+    private void DetachDocument()
+    {
+        if (_caret is not { } caret)
+            return;
+
+        caret.Updated -= OnCaretUpdated;
+        if (_bridge is { } bridge)
+        {
+            bridge.HeightsChanged -= OnDocumentHeightsChanged;
+            bridge.SelectionSource = null;
+        }
+
+        _caret = null;
+        _controller = null;
+        _bridge = null;
+        _dragging = false;
+    }
+
+    /// <summary>
+    /// Places the M1.WP3 <b>stub</b> caret at a document position (content coordinates: column,
+    /// document row) — the pre-<see cref="AttachDocument"/> spike/test path only; once a document
+    /// is attached the real caret owns the publication. While the control is focused the caret is
+    /// published through <see cref="ITerminalCaretService"/> on the document panel, so the SCP's
+    /// composite slide and zone clip position and hide the real terminal cursor with zero
+    /// re-raster; it publishes as hidden when the position scrolls out of the viewport.
+    /// </summary>
+    public void SetStubCaret(int column, int documentRow)
+    {
+        _caretColumn = Math.Max(0, column);
+        _caretDocumentRow = Math.Max(0, documentRow);
+
+        if (_hasFocus && _caret is null)
+            PublishCaret();
+    }
+
+    // ───────────────────────────── template wiring ─────────────────────────────
+
+    /// <inheritdoc/>
+    protected override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+
+        _scrollViewer = GetTemplatePart<ScrollViewer>(PartScrollViewer);
+        _panel = GetTemplatePart<DocumentPanel>(PartDocumentPanel);
+
+        if (_panel is { } panel)
+        {
+            panel.HeightSource = _heightSource;
+            panel.BlockFactory = _blockFactory;
+        }
+
+        if (_hasFocus)
+            PublishCaret();
+    }
+
+    /// <inheritdoc/>
+    protected override void OnTemplateDetaching(TemplateInstance old)
+    {
+        ClearCaret();
+        _scrollViewer = null;
+        _panel = null;
+        base.OnTemplateDetaching(old);
+    }
+
+    // ───────────────────────────── IContentRowMap (the caret's vertical geometry) ─────────────────────────────
+
+    int IContentRowMap.ContentRows => _panel?.ContentRowCount ?? 0;
+
+    int IContentRowMap.BlockTopRow(int blockIndex) => _panel?.GetBlockTopRow(blockIndex) ?? 0;
+
+    int IContentRowMap.BlockIndexOfRow(int contentRow) => _panel?.BlockIndexOfContentRow(contentRow) ?? 0;
+
+    // ───────────────────────────── keyboard ─────────────────────────────
+
+    /// <summary>
+    /// Attached: routes keys to the document caret (motion, selection, editing, undo — see the
+    /// class remarks for the keymap). Unattached: spike-level keyboard scrolling (WP3) — cell
+    /// steps for arrows, viewport steps for paging, document ends on Ctrl+Home/Ctrl+End; offsets
+    /// coerce at the SCP, so paging at EOF pins at the maximum offset instead of overshooting.
+    /// </summary>
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+
+        if (e.Handled)
+            return;
+
+        if (_caret is { } caret)
+        {
+            OnDocumentKeyDown(e, caret);
+            return;
+        }
+
+        if (_scrollViewer is not { } scrollViewer)
+            return;
+
+        switch (e.Key)
+        {
+            case Key.UpArrow when e.Modifiers == KeyModifiers.None:
+                scrollViewer.ScrollBy(0, -1);
+                e.Handled = true;
+                break;
+
+            case Key.DownArrow when e.Modifiers == KeyModifiers.None:
+                scrollViewer.ScrollBy(0, +1);
+                e.Handled = true;
+                break;
+
+            case Key.PageUp when e.Modifiers == KeyModifiers.None:
+                scrollViewer.ScrollBy(0, -Math.Max(1, scrollViewer.Viewport.Rows));
+                e.Handled = true;
+                break;
+
+            case Key.PageDown when e.Modifiers == KeyModifiers.None:
+                scrollViewer.ScrollBy(0, +Math.Max(1, scrollViewer.Viewport.Rows));
+                e.Handled = true;
+                break;
+
+            // Exact-modifier matches (consistent with the None cases above): a loose Control mask
+            // would swallow Ctrl+Shift+Home — the select-to-start chord WP8 binds (review wave1-4).
+            case Key.Home when e.Modifiers == KeyModifiers.Control:
+                scrollViewer.VerticalOffset = 0;
+                e.Handled = true;
+                break;
+
+            case Key.End when e.Modifiers == KeyModifiers.Control:
+                scrollViewer.VerticalOffset = Math.Max(0, scrollViewer.Extent.Rows - scrollViewer.Viewport.Rows);
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void OnDocumentKeyDown(KeyEventArgs e, DocumentCaret caret)
+    {
+        bool ctrl = (e.Modifiers & KeyModifiers.Control) != 0;
+        bool shift = (e.Modifiers & KeyModifiers.Shift) != 0;
+
+        // Alt/Super chords are not ours (M3 row ops, menu access keys) — let them bubble.
+        if ((e.Modifiers & ~(KeyModifiers.Control | KeyModifiers.Shift)) != KeyModifiers.None)
+            return;
+
+        switch (e.Key)
+        {
+            case Key.LeftArrow:
+                if (ctrl)
+                    caret.MoveWordLeft(shift);
+                else
+                    caret.MoveLeft(shift);
+                break;
+
+            case Key.RightArrow:
+                if (ctrl)
+                    caret.MoveWordRight(shift);
+                else
+                    caret.MoveRight(shift);
+                break;
+
+            case Key.UpArrow when !ctrl:
+                caret.MoveVertical(-1, shift);
+                break;
+
+            case Key.DownArrow when !ctrl:
+                caret.MoveVertical(+1, shift);
+                break;
+
+            case Key.PageUp when !ctrl:
+                caret.MoveVertical(-ViewportRows(), shift);
+                break;
+
+            case Key.PageDown when !ctrl:
+                caret.MoveVertical(+ViewportRows(), shift);
+                break;
+
+            case Key.Home:
+                if (ctrl)
+                    caret.MoveDocumentStart(shift);
+                else
+                    caret.MoveHome(shift);
+                break;
+
+            case Key.End:
+                if (ctrl)
+                    caret.MoveDocumentEnd(shift);
+                else
+                    caret.MoveEnd(shift);
+                break;
+
+            case Key.Enter when !ctrl && !shift:
+                caret.InsertNewline();
+                break;
+
+            case Key.Backspace when !ctrl:
+                caret.Backspace();
+                break;
+
+            case Key.Delete when shift && !ctrl: // Shift+Delete — cut (TextBox parity alias)
+                if (!Cut(caret))
+                    return; // nothing to cut — bubbles, consistent with Ctrl+X
+                break;
+
+            case Key.Delete when !ctrl && !shift:
+                caret.DeleteForward();
+                break;
+
+            case Key.Insert when ctrl && !shift: // Ctrl+Insert — copy (TextBox parity alias)
+                if (!Copy(caret))
+                    return; // nothing to copy — bubbles
+                break;
+
+            case Key.Insert when shift && !ctrl: // Shift+Insert — paste (TextBox parity alias)
+                if (!PasteFromStore(caret))
+                    return; // empty store — bubbles
+                break;
+
+            case Key.Tab when !ctrl && !shift: // Shift+Tab stays free for M4 outdent
+                caret.InsertIndent();
+                break;
+
+            case Key.Character when ctrl && !shift && IsLetter(e, 'a'):
+                caret.SelectAll();
+                break;
+
+            // WP9 clipboard chords — safe on every wire (integration notes §4). On POSIX the
+            // session runs with ISIG off (stty -isig), so Ctrl+C reaches us as the 0x03 byte
+            // decoded to this chord, never as SIGINT — see the class remarks for the verified
+            // wire truth.
+            case Key.Character when ctrl && !shift && IsLetter(e, 'c'):
+                if (!Copy(caret))
+                    return; // Ctrl+C with no selection is not consumed — bubbles (TextBox parity)
+                break;
+
+            case Key.Character when ctrl && !shift && IsLetter(e, 'x'):
+                if (!Cut(caret))
+                    return;
+                break;
+
+            case Key.Character when ctrl && !shift && IsLetter(e, 'v'):
+                if (!PasteFromStore(caret))
+                    return; // the store is empty — bubbles (FB-3: there is no terminal read to fall back to)
+                break;
+
+            // The Ctrl+Shift+Z redo arm precedes the Ctrl+Z undo arm so a shifted Z matches redo
+            // (Kitty wires; on the legacy wire the Shift is dropped — FB-14 — and Ctrl+Y is the
+            // safe redo chord, mirroring the framework TextBox's arm ordering).
+            case Key.Character when ctrl && shift && IsLetter(e, 'z'):
+                if (!caret.Redo())
+                    return; // nothing to redo — bubble
+                break;
+
+            case Key.Character when ctrl && !shift && IsLetter(e, 'z'):
+                if (!caret.Undo())
+                    return; // nothing to undo — bubble
+                break;
+
+            case Key.Character when ctrl && !shift && IsLetter(e, 'y'):
+                if (!caret.Redo())
+                    return;
+                break;
+
+            default:
+                return; // not ours — bubbles (M5 command surface)
+        }
+
+        e.Handled = true;
+    }
+
+    private int ViewportRows() => Math.Max(1, _scrollViewer?.Viewport.Rows ?? 1);
+
+    private static bool IsLetter(KeyEventArgs e, char lower)
+        => e.Text.Length == 1 && char.ToLowerInvariant(e.Text.Span[0]) == lower;
+
+    // ───────────────────────────── clipboard (M1.WP9) ─────────────────────────────
+
+    /// <summary>
+    /// Copy: serializes the selection's exact source range and writes both clipboard sinks.
+    /// False (nothing copied, key bubbles) when the selection is empty — M1 has no line-copy
+    /// convention (later milestones'), matching the framework <c>TextBox</c>'s unconsumed
+    /// no-selection Ctrl+C.
+    /// </summary>
+    private bool Copy(DocumentCaret caret)
+    {
+        if (caret.SelectedText() is not { } text)
+            return false;
+
+        WriteClipboard(text);
+        return true;
+    }
+
+    /// <summary>
+    /// Cut: copy (both sinks) + delete of the selection as its own undo unit — undo restores
+    /// the text <i>and</i> the selection (the recorded before-state carries the anchor).
+    /// False (key bubbles) when the selection is empty.
+    /// </summary>
+    private bool Cut(DocumentCaret caret)
+    {
+        if (caret.SelectedText() is not { } text)
+            return false;
+
+        WriteClipboard(text);
+        caret.DeleteSelection();
+        return true;
+    }
+
+    /// <summary>
+    /// Ctrl+V / Shift+Insert: pastes the internal store's content as one literal splice
+    /// (replacing the selection). False (key bubbles) when the store is empty — this path can
+    /// only see in-app copies (FB-3); external clipboard content arrives via bracketed paste.
+    /// </summary>
+    private bool PasteFromStore(DocumentCaret caret)
+    {
+        if (_clipboard.Text is not { Length: > 0 } text)
+            return false;
+
+        caret.Paste(text);
+        return true;
+    }
+
+    /// <summary>
+    /// The dual write (FB-3): the internal store is the read side for in-app Ctrl+V; the
+    /// framework <see cref="IClipboardService"/> emits the OSC 52 set toward the user's system
+    /// clipboard (fire-and-forget, queued on the out-of-band OSC channel and emitted in the
+    /// frame's Phase 6; a no-op inside the service when the wire never negotiated
+    /// <c>ClipboardWrite</c>).
+    /// </summary>
+    private void WriteClipboard(string text)
+    {
+        _clipboard.SetText(text);
+
+        if (UIApplication.Current is { } application)
+            application.Clipboard.SetText(text);
+    }
+
+    // ───────────────────────────── text input (typing) ─────────────────────────────
+
+    /// <summary>
+    /// Printable input → <see cref="EditController.Apply"/> (insert at the caret / replace the
+    /// selection). Bracketed paste (<see cref="TextInputEventArgs.FromPaste"/> — the terminal's
+    /// own paste keybinding, and the only inbound path for <i>external</i> clipboard content,
+    /// FB-3) applies the whole payload <b>literally as one splice</b>, its own undo unit
+    /// (<c>EditKind.Paste</c>); M1 never reparses pasted text (M4 owns smart paste).
+    /// </summary>
+    protected override void OnTextInput(TextInputEventArgs e)
+    {
+        base.OnTextInput(e);
+
+        if (e.Handled || _caret is not { } caret || e.Text.Length == 0)
+            return;
+
+        if (e.FromPaste)
+            caret.Paste(e.Text.ToString());
+        else
+            caret.InsertText(e.Text.ToString());
+
+        e.Handled = true;
+    }
+
+    // ───────────────────────────── mouse ─────────────────────────────
+
+    /// <summary>
+    /// Attached only: click positions the caret (panel-local hit → block → run map → source
+    /// position), double-click selects the word, triple-click selects the block/paragraph, and a
+    /// single-click press begins a capture drag that extends the selection.
+    /// </summary>
+    protected override void OnMouseDown(MouseButtonEventArgs e)
+    {
+        base.OnMouseDown(e);
+
+        if (e.Handled || e.Button != MouseButton.Left || _caret is not { } caret || _panel is not { } panel)
+            return;
+
+        Focus(FocusNavigationMethod.Pointer);
+        var local = e.GetPosition(panel);
+
+        if (e.ClickCount >= 3)
+        {
+            caret.SelectBlockAt(caret.PositionFromContentPoint(local.Column, local.Row).Position);
+        }
+        else if (e.ClickCount == 2)
+        {
+            caret.SelectWordAt(caret.PositionFromContentPoint(local.Column, local.Row).Position);
+        }
+        else
+        {
+            caret.ClickAt(local.Column, local.Row);
+            if (CaptureMouse())
+                _dragging = true;
+        }
+
+        e.Handled = true;
+    }
+
+    /// <inheritdoc/>
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+
+        if (!_dragging || _caret is not { } caret || _panel is not { } panel)
+            return;
+
+        var local = e.GetPosition(panel);
+        caret.DragTo(local.Column, local.Row); // coordinates clamp inside — dragging past an edge keeps extending
+    }
+
+    /// <inheritdoc/>
+    protected override void OnMouseUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseUp(e);
+
+        if (!_dragging || e.Button != MouseButton.Left)
+            return;
+
+        _dragging = false;
+        ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    /// <inheritdoc/>
+    protected override void OnLostMouseCapture(RoutedEventArgs e)
+    {
+        _dragging = false;
+        base.OnLostMouseCapture(e);
+    }
+
+    // ───────────────────────────── caret publication + scroll-follow ─────────────────────────────
+
+    /// <inheritdoc/>
+    protected override void OnGotFocus(FocusChangedEventArgs e)
+    {
+        base.OnGotFocus(e);
+        _hasFocus = true;
+        PublishCaret();
+    }
+
+    /// <inheritdoc/>
+    protected override void OnLostFocus(FocusChangedEventArgs e)
+    {
+        base.OnLostFocus(e);
+        _hasFocus = false;
+        _controller?.SealGroup(); // a focus boundary seals the open typing group (TextBox parity)
+        ClearCaret();
+    }
+
+    /// <summary>
+    /// Caret changed: re-publish and scroll-follow — minimal offset writes through
+    /// <see cref="ScrollViewer.EnsureVisible"/> keep the caret's content cell inside the viewport
+    /// (the SCP coerces the offset into range).
+    /// </summary>
+    private void OnCaretUpdated()
+    {
+        if (_caret is not { } caret)
+            return;
+
+        // The position read can refine a lazily wrapped block's height (GetRunMap's
+        // estimate-then-refine), which raises HeightsChanged — the guard keeps that from
+        // re-entering the publish path mid-read; the values below are post-refine either way.
+        int documentRow, cell;
+        _publishing = true;
+        try
+        {
+            (documentRow, cell) = caret.VisualDocumentPosition();
+        }
+        finally
+        {
+            _publishing = false;
+        }
+
+        if (_hasFocus)
+            PublishCaret(documentRow, cell);
+
+        _scrollViewer?.EnsureVisible(new Cursorial.Rendering.Rect(cell, documentRow, 1, 1));
+    }
+
+    /// <summary>
+    /// Heights moved (edit, rewrap, width change): the caret's document row may have shifted with
+    /// the prefix sums — re-publish at the recomputed position. No scroll-follow: only a caret
+    /// <i>move</i> steers the viewport.
+    /// </summary>
+    private void OnDocumentHeightsChanged()
+    {
+        if (_hasFocus && !_publishing)
+            PublishCaret();
+    }
+
+    private void PublishCaret()
+    {
+        if (_caret is { } caret)
+        {
+            _publishing = true;
+            try
+            {
+                var (documentRow, cell) = caret.VisualDocumentPosition();
+                PublishCaret(documentRow, cell);
+            }
+            finally
+            {
+                _publishing = false;
+            }
+        }
+        else
+        {
+            PublishCaret(_caretDocumentRow, _caretColumn);
+        }
+    }
+
+    private void PublishCaret(int documentRow, int cell)
+    {
+        if (_panel is not { } panel || UIApplication.Current is not { } application)
+            return;
+
+        // Published element-local on the PANEL (content coordinates): frame assembly folds the
+        // SCP's composite scroll offset live and gates visibility on the zone clip, so a scroll
+        // moves/hides the terminal cursor with no re-publication and zero re-raster.
+        ITerminalCaretService caretService = application.CaretService;
+        caretService.Publish(panel, cell, documentRow, CursorShape.BlinkingBar);
+    }
+
+    private void ClearCaret()
+    {
+        if (_panel is not { } panel || UIApplication.Current is not { } application)
+            return;
+
+        ITerminalCaretService caretService = application.CaretService;
+        caretService.Clear(panel);
+    }
+}

@@ -1,0 +1,24 @@
+<Project>
+
+  <!--
+    Build/reference strategy (implementation-plan §2.2):
+    - Default: package mode — the editor projects reference the published Cursorial packages.
+    - `dotnet build -p:UseLocalCursorial=true` (or flip the default below) switches every Cursorial
+      PackageReference in the editor projects to a ProjectReference into the sibling Cursorial repo.
+      This is the ONE sanctioned way to consume in-flight framework changes (FB items). The test
+      project ignores this switch: it is ALWAYS in project mode (plan §2.1 — the verified
+      project-over-package mix; Cursorial.UI.Testing is unpackaged).
+  -->
+  <PropertyGroup>
+    <UseLocalCursorial Condition="'$(UseLocalCursorial)' == ''">false</UseLocalCursorial>
+    <CursorialRepoRoot>$(MSBuildThisFileDirectory)..\Cursorial\</CursorialRepoRoot>
+    <CursorialPackageVersion>0.3.1</CursorialPackageVersion>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+</Project>

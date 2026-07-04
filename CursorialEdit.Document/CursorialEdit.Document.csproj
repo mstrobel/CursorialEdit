@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The parser/document core (implementation-plan §2.1): buffer, edit pipeline, parse windowing,
+    block model, find, persistence, export. THE ONLY PROJECT THAT DECLARES MARKDIG — enforced by
+    ArchitectureTests. References Cursorial.UI solely for UITimer/UIDispatcher (and, transitively,
+    Cursorial.Core for GraphemeWidth/GraphemeEnumerator): no XAML, no Bars, no controls.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>CursorialEdit.Document</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Markdig" Version="1.3.2" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCursorial)' != 'true'">
+    <PackageReference Include="Cursorial.UI" Version="$(CursorialPackageVersion)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCursorial)' == 'true'">
+    <ProjectReference Include="$(CursorialRepoRoot)Cursorial.UI\Cursorial.UI.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CursorialEdit.Tests" />
+  </ItemGroup>
+
+</Project>
