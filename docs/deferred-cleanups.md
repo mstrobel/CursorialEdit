@@ -70,3 +70,12 @@ span-oracle literal/HTML blind spot — were fixed in the review-fix commit; the
 - **`ConformanceReportTests` writes `docs/conformance.md` into the working tree as a test side effect** —
   acceptable (the doc is a checked-in generated artifact) but gate the write behind an env flag or move
   to a `[Trait("Category","Conformance")]`-only path so a plain `dotnet test` doesn't dirty the tree.
+
+## Benchmark robustness (recurring flake)
+
+- **`TypingLatencyBenchmark` trips its 50 ms hard ceiling on a single outlier under back-to-back
+  full-suite load** (p50 stays ~4–8 ms; one keystroke spikes ~54–56 ms from GC/JIT/scheduling under
+  parallel test pressure). Passes 5/5 isolated. The `max < 50 ms` assertion is inherently load-fragile.
+  Fix options: assert the hard ceiling on p99 (not max), warm more aggressively, or mark the benchmark
+  `[Trait("Category","Benchmark")]` and run it serialized/excluded from the parallel default run (per
+  §5.7 lanes). Not a product regression — a test-harness robustness item.
