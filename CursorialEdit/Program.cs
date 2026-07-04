@@ -8,6 +8,33 @@ using CursorialEdit.App;
 // build the UIApplication, run the single-root EditorShell (no Window), and arm the FB-4
 // emergency-restore workaround around the session's lifetime.
 
+// M2 checkpoint deliverable: `--reveal-demo [file.md]` runs the self-contained reveal-on-edit demo
+// (RevealDemoView) instead of the production shell — a hands-on preview of markdown rendering +
+// reveal-on-edit before the WP7 presenter fan-out wires it into the real editor.
+if (args.Length > 0 && args[0] == "--reveal-demo")
+{
+    string markdown = args.Length > 1 && File.Exists(args[1]) ? await File.ReadAllTextAsync(args[1]) : string.Empty;
+
+    if (Console.IsInputRedirected || Console.IsOutputRedirected)
+    {
+        Console.Error.WriteLine("cursorialedit: the reveal demo needs an interactive terminal (TTY).");
+        return 1;
+    }
+
+    UIApplication demoApp = UIApplication.CreateBuilder().WithFrameRate(60).UseAlternateScreen().Build();
+    IDisposable? demoRestore = null;
+    demoApp.Started += (_, _) => demoRestore = SignalRestore.Register();
+    try
+    {
+        return await demoApp.RunAsync(() => new RevealDemoView(markdown));
+    }
+    finally
+    {
+        demoRestore?.Dispose();
+        await demoApp.DisposeAsync();
+    }
+}
+
 if (!AppStartupOptions.TryParse(args, out var startupOptions, out var startupError))
 {
     Console.Error.WriteLine(startupError);

@@ -83,17 +83,19 @@ public sealed class MarkdigBlockProducer : IDisposable
     /// for live re-adoption.
     /// </summary>
     /// <param name="controller">The edit controller whose buffer is parsed and observed.</param>
-    /// <param name="pipeline">The pipeline to parse with; defaults to <see cref="MarkdownPipelineFactory.Shared"/> (the one pinned configuration).</param>
     /// <exception cref="ArgumentNullException"><paramref name="controller"/> is <see langword="null"/>.</exception>
-    public MarkdigBlockProducer(
-        EditController controller,
-        MarkdownPipeline? pipeline = null)
+    /// <remarks>
+    /// The pipeline is always <see cref="MarkdownPipelineFactory.Shared"/> (the one pinned configuration).
+    /// The constructor deliberately exposes no Markdig type, so the app can construct the producer without
+    /// referencing Markdig — the quarantine (<c>ArchitectureTests</c>) stays intact.
+    /// </remarks>
+    public MarkdigBlockProducer(EditController controller)
     {
         ArgumentNullException.ThrowIfNull(controller);
 
         _controller = controller;
         _buffer = controller.Buffer;
-        _pipeline = pipeline ?? MarkdownPipelineFactory.Shared;
+        _pipeline = MarkdownPipelineFactory.Shared;
         Blocks = new BlockList();
 
         var segments = SegmentFull();
