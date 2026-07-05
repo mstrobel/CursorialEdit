@@ -66,13 +66,8 @@ internal static class MiniHighlighter
 
     private static readonly HashSet<string> JsonKeywords = new(StringComparer.Ordinal) { "true", "false", "null" };
 
-    private static readonly IBrush KeywordBrush = new SolidColorBrush(Colors.LightBlue);
-    private static readonly IBrush StringBrush = new SolidColorBrush(Colors.LightGreen);
-
-    // A comment must not be the code-fill color (MarkdownStyles.CodeFillColor = LightBlack) or it renders
-    // invisibly on its own fill; White reads on the fill while staying the least prominent token color.
-    private static readonly IBrush CommentBrush = new SolidColorBrush(Colors.White);
-    private static readonly IBrush NumberBrush = new SolidColorBrush(Colors.LightCyan);
+    // Token COLORS now live in the Md.* theme tokens (MarkdownStyles.CodeTokenBrush / RawMarkBrush); this
+    // class only CLASSIFIES tokens. (The former per-class brushes + BrushFor were retired in WP11a.)
 
     /// <summary>Maps a fence info string (<see cref="Document.Model.Block.FenceInfo"/>) to a language.</summary>
     public static CodeLanguage Detect(string? fenceInfo)
@@ -96,16 +91,6 @@ internal static class MiniHighlighter
             _ => CodeLanguage.Unknown,
         };
     }
-
-    /// <summary>The brush for a token class.</summary>
-    public static IBrush BrushFor(CodeTokenClass tokenClass) => tokenClass switch
-    {
-        CodeTokenClass.Keyword => KeywordBrush,
-        CodeTokenClass.String => StringBrush,
-        CodeTokenClass.Comment => CommentBrush,
-        CodeTokenClass.Number => NumberBrush,
-        _ => KeywordBrush,
-    };
 
     /// <summary>
     /// The non-plain token spans of <paramref name="line"/> under <paramref name="language"/> (the

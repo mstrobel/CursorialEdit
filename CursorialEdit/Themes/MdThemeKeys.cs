@@ -105,8 +105,8 @@ internal static class MdStyleClasses
     public const string Quote = "md-quote";
     public const string FrontMatter = "md-frontmatter";
 
-    /// <summary>The revealed-syntax-mark class (<c>Md.Mark</c>) — a run-level token; carried on the presenter for addressability.</summary>
-    public const string Mark = "md-mark";
+    // (No md-mark class: a revealed mark is an inline RUN within a presenter, not a whole-presenter kind,
+    // so there is no element to carry the class — it is styled via the Md.Mark resource token directly.)
 
     /// <summary>The <c>md-hN</c> class for heading level <paramref name="level"/> (1–6, clamped).</summary>
     public static string Heading(int level) => Math.Clamp(level, 1, 6) switch

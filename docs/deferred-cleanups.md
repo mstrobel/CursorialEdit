@@ -137,3 +137,12 @@ in **WP11 (caps + theme layer)**, which owns selection-tier rendering and the No
   (finding 6). Parameterize the shared builder with a "raw/identity" mode instead of cloning.
 - **RawSourcePresenter.RenderRows re-implements the base row loop + CodeBlockPresenter's token-overdraw
   cursor** (finding 7). Factor the shared overdraw helper.
+
+## WP11a review — deferred: hard-break ↵ through the §18.4 glyph seam
+
+- The front-matter fold chevrons now resolve through `EditorGlyph` (the §18.4 imperative Icon analogue),
+  but the hard-break **↵** affordance still draws the hardcoded `RunMapBuilder.HardBreakGlyph = "↵"`.
+  It's emitted deep in the reviewed `RunMapBuilder` layout hot path, which has no ambient `UIApplication`
+  to resolve the capability ladder against. Deferred — it resolves to the same Unicode floor "↵" today,
+  so nothing is lost; wiring it needs a glyph-resolution seam threaded into the layout builder (or a
+  post-layout glyph substitution), which is a larger change to reviewed code.

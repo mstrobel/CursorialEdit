@@ -123,8 +123,45 @@ public sealed class MdThemeTests
     [InlineData("palette:9", true)]
     [InlineData("not-a-color", false)]
     [InlineData("", false)]
-    public void TryParseColor_HandlesHexNamedPaletteAndRejectsGarbage(string text, bool expected)
+    // Malformed hex must return false, NOT throw — Color.FromHex throws ArgumentException (not just
+    // FormatException) for a wrong-length or bad-digit hex, and a bad user-config override must never
+    // crash startup (it falls back to the authored token).
+    [InlineData("#80ff0000", false)] // 8-digit — outside the 3/6-digit forms FromHex accepts
+    [InlineData("#12", false)]       // too short
+    [InlineData("#gggggg", false)]   // bad digits
+    public void TryParseColor_HandlesHexNamedPaletteAndRejectsGarbage_WithoutThrowing(string text, bool expected)
     {
         Assert.Equal(expected, MdTheme.TryParseColor(text, out _));
+    }
+
+    [Fact]
+    public void CodeFillOverride_RecolorsTheWholeCodeBlock_IncludingTheBackgroundFill()
+    {
+        using var config = new TempConfigRoot();
+        config.WriteGlobalFile("""{ "theme.md.code.fill": "LightRed" }""");
+
+        var options = new UITestHostOptions
+        {
+            InitialSize = new Size(40, 12),
+            Capabilities = TestCapabilities.KittyTruecolor,
+            ConfigureBuilder = builder => builder.WithUserConfiguration(new UserConfigurationOptions { PathProvider = config }),
+        };
+
+        using var host = UITestHost.Create(options);
+        MdTheme.EnsureInstalled(host.Application);
+
+        var shell = new EditorShell();
+        shell.WireDocument("intro\n\n```\ncode\n```", host.Time); // fenced code as block 1
+        host.ShowRoot(shell);
+        Assert.True(host.RunUntilIdle());
+        shell.Editor.Focus();
+        Assert.True(host.RunUntilIdle());
+
+        // The code fill must be the override everywhere in the block — including a BLANK trailing cell
+        // (the PaintBackground fill), not just behind the "code" text — so it reads as one uniform color,
+        // not two-tone. Find the "code" row and check a text cell and a blank cell share the override.
+        int codeRow = Enumerable.Range(0, 12).First(r => host.GetRowText(r).TrimEnd() == "code");
+        Assert.Equal(Colors.LightRed, host.GetCell(0, codeRow).Style.Background);   // behind the 'c'
+        Assert.Equal(Colors.LightRed, host.GetCell(20, codeRow).Style.Background);  // a blank cell — the fill
     }
 }

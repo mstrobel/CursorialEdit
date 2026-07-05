@@ -203,8 +203,11 @@ internal static class MdTheme
                 color = Color.FromHex(text);
                 return true;
             }
-            catch (FormatException)
+            catch (Exception e) when (e is FormatException or ArgumentException)
             {
+                // Color.FromHex throws ArgumentException for a malformed/wrong-length hex (e.g. "#12",
+                // "#gggggg", an 8-digit value) and FormatException for bad digits — both mean "not a color".
+                // A bad user-config override must fall back to the authored token, never crash startup.
                 return false;
             }
         }

@@ -26,8 +26,9 @@ internal readonly record struct EditorGlyph(string Unicode, string? NerdFont = n
     /// <summary>The front-matter <b>expanded</b> chevron (▾) — the collapse affordance.</summary>
     public static readonly EditorGlyph FrontMatterExpanded = new("▾"); // ▾
 
-    /// <summary>The hard-line-break affordance (↵) shown on the active line (§2.1).</summary>
-    public static readonly EditorGlyph HardBreak = new("↵"); // ↵
+    // (The hard-break ↵ affordance is not routed through this seam yet: it is emitted deep in the reviewed
+    // RunMapBuilder layout hot path, which has no ambient UIApplication. Deferred — it resolves to the same
+    // Unicode floor "↵" today, so nothing is lost. Tracked in docs/deferred-cleanups.md.)
 
     /// <summary>
     /// The glyph string resolved against <see cref="UIApplication.Current"/>'s capability ladder:

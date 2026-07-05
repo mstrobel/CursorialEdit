@@ -76,7 +76,7 @@ public sealed class CodeBlockPresenter : LeafBlockPresenter
     protected override void PaintBackground(RenderContext context, int width, int rows)
     {
         if (width > 0 && rows > 0)
-            context.FillRectangle(new Rect(0, 0, width, rows), MarkdownStyles.CodeFillColor);
+            context.FillRectangle(new Rect(0, 0, width, rows), MarkdownStyles.CodeFillBrush(this)); // themeable token, not the hardcoded color
     }
 
     /// <inheritdoc/>
@@ -97,8 +97,12 @@ public sealed class CodeBlockPresenter : LeafBlockPresenter
         if (display.Length == 0)
             return;
 
+        // Resolve the (loop-invariant) code-fill background once — the token overdraw reuses it rather
+        // than walking the resource chain per token on the render hot path.
+        var codeFill = MarkdownStyles.CodeFillBrush(this);
+
         // Draw the whole line monochrome over the fill, then overdraw the highlighted token spans.
-        context.DrawText(0, row, display, foreground, MarkdownStyles.CodeFillBrush(this));
+        context.DrawText(0, row, display, foreground, codeFill);
 
         // Tokens are in ascending Start order, so carry a running (char, cell) cursor instead of
         // re-measuring StringWidth([0, Start)) per token — O(n) overdraw, not O(n·tokenCount).
@@ -112,7 +116,7 @@ public sealed class CodeBlockPresenter : LeafBlockPresenter
             int length = Math.Min(token.Length, display.Length - token.Start);
             prevCell += GraphemeWidth.StringWidth(display.AsSpan(prevChar, token.Start - prevChar));
             prevChar = token.Start;
-            context.DrawText(prevCell, row, display.AsSpan(token.Start, length), MarkdownStyles.CodeTokenBrush(this, token.Class), MarkdownStyles.CodeFillBrush(this));
+            context.DrawText(prevCell, row, display.AsSpan(token.Start, length), MarkdownStyles.CodeTokenBrush(this, token.Class), codeFill);
         }
     }
 
