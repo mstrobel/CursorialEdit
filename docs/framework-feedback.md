@@ -478,7 +478,11 @@ unchecked when "wrap for display" is off — the option is moot without display 
 **Chosen design (coercion, not a proposed/effective field pair).**
 - Move `ICheckableCommandParameter` / `CheckableCommandParameter` from `Cursorial.UI.Bars` into
   `Cursorial.UI` proper (it binds to `ToggleButton` + the coercion pipeline, both in UI; only incidentally
-  in Bars). Make it the **default** command parameter a checkable control uses when the app provides none.
+  in Bars). Make it the **default** command parameter for **`ToggleButton` and its subclasses** (the
+  checkable control family — `BarToggleButton`, checkable menu entries, etc.) when the app provides none.
+  A plain `Button` has no checked state, so it gets no checkable default. (Confirm every control that
+  consumes `ICheckableCommandParameter` — e.g. a checkable split/menu entry — is in the `ToggleButton`
+  hierarchy so it inherits the default; anything outside it needs the same wiring.)
 - Add a `Handled` flag to the parameter. Register a **coercion callback** on `ToggleButton.IsChecked`
   (the framework has the full pipeline — `RecoerceLocal`/`IsCoerced`/base-vs-coerced in `EffectiveValue`):
   when `Handled`, coerce the effective checked state to the parameter's value (override); when NOT handled,
