@@ -468,3 +468,29 @@ cells the hidden layout doesn't, so the landing drifts by the marker width. The 
 landing against the layout it will actually render. Bounded (a cell or two, leading-mark blocks only) and
 deferred, but the missing seam is the root cause. **Proposal (app-side):** let the caret query a block's
 run map for an arbitrary hypothetical active line, so vertical landings resolve against the post-reveal layout.
+
+## FB-27 — `CheckableCommandParameter` needs proposed-vs-effective checked state — `proposed` (Bars / commands)
+
+Raised by Mike, 2026-07-05, designing the "wrap while editing" toggle command (which must show
+greyed + unchecked when "wrap for display" is off — the option is moot without display wrap).
+
+**Proposal.** Add `ProposedIsChecked` (the persisted user preference) alongside the existing `IsChecked`
+(the effective/displayed state) on the mutable `CheckableCommandParameter`. `IsChecked` is seeded from
+`ProposedIsChecked` and recomputed by the command handler on each `CanExecuteChanged`:
+`IsChecked = available && ProposedIsChecked; CanExecute = available;`. Paired with `CanExecute=false`, the
+handler trivially forces greyed + unchecked while the preference survives in `ProposedIsChecked` and snaps
+back when the gate reopens.
+
+**Notes for implementation:**
+- The control-facing `ICheckableCommandParameter { bool IsChecked }` interface is UNCHANGED — `BarToggleButton`
+  reads only the effective `IsChecked` (`SetCurrentValue(IsCheckedProperty, (bool?)checkable.IsChecked)`). So
+  this is a **non-breaking additive** change to the mutable carrier; existing checkable commands are untouched.
+- It **generalizes**: the split lets each command pick its disabled display — greyed+unchecked (`IsChecked=false`)
+  or greyed+checked / "on but locked" (`IsChecked=ProposedIsChecked`). `IsChecked`-alone can't express both.
+- Consider a carrier helper `ApplyAvailability(bool available)` → sets `IsChecked` from `ProposedIsChecked`
+  (returns it), so handlers don't hand-write the mapping. `CanExecute` stays on the command.
+- Works today with `IsChecked`-only if the app holds the preference in side-state; `ProposedIsChecked` just
+  co-locates it on the carrier. Endorsed because the pattern recurs (context-gated toggles: wrap-on-edit,
+  table-only ops, etc.).
+- **Lands with the reveal-wrap View commands** (M5 command surface); the reveal-wrap RENDERING + config flag
+  land earlier (after the M3 R3 gate). See [[feedback-reveal-wrap-decision]].
