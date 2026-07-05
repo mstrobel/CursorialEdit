@@ -51,6 +51,47 @@ public sealed class RevealDemoTests
     }
 
     [Fact]
+    public void Caret_IsVisible_AndFollowsTheActiveLine_WithoutExplicitFocus()
+    {
+        using var host = UITestHost.Create(new UITestHostOptions { InitialSize = new Size(40, 12) });
+        var demo = new RevealDemoView("# Title\n\nsome body text on this line");
+        host.ShowRoot(demo);
+        Assert.True(host.RunUntilIdle()); // no explicit Focus() — like the real app
+
+        // The terminal cursor is visible at the document origin (the caret publishes unconditionally
+        // for the demo, so no focus dependency leaves it hidden).
+        Assert.True(host.FrameBuffer.CursorVisible);
+        Assert.Equal(0, host.FrameBuffer.CursorColumn);
+        Assert.Equal(0, host.FrameBuffer.CursorRow);
+
+        // Move down to the body line and press End — the cursor advances to the line's end cell.
+        host.SendKey(Key.DownArrow);
+        host.SendKey(Key.DownArrow);
+        host.SendKey(Key.End);
+        Assert.True(host.RunUntilIdle());
+
+        Assert.True(host.FrameBuffer.CursorVisible);
+        Assert.True(host.FrameBuffer.CursorColumn > 0, "End should advance the cursor along the active line");
+    }
+
+    [Fact]
+    public void End_OnALineWiderThanTheViewport_SlidesToKeepTheCaretVisible()
+    {
+        using var host = UITestHost.Create(new UITestHostOptions { InitialSize = new Size(24, 8) });
+        // A single line far wider than 24 columns.
+        var demo = new RevealDemoView(new string('a', 60) + "END");
+        host.ShowRoot(demo);
+        Assert.True(host.RunUntilIdle());
+
+        host.SendKey(Key.End);
+        Assert.True(host.RunUntilIdle());
+
+        // The line slid so the caret (at the far end) is within the viewport with the 2-cell slack.
+        Assert.True(host.FrameBuffer.CursorVisible);
+        Assert.InRange(host.FrameBuffer.CursorColumn, 0, 23);
+    }
+
+    [Fact]
     public void Typing_OnTheActiveLine_ReparsesAndReRenders()
     {
         using var host = UITestHost.Create(new UITestHostOptions { InitialSize = new Size(60, 20) });

@@ -434,3 +434,14 @@ in reach, and "copied elsewhere, Ctrl+V does nothing" has no signal we can give.
 entirely. Small addendum for `Cursorial.UI.Testing`: neither stock `TestCapabilities` preset negotiates
 `ClipboardWrite`, though the real negotiator grants it for Kitty AND Xterm families — the presets
 undersell real wires; suites asserting OSC 52 bytes must compose it on manually.
+
+## FB-24 — Activation auto-focus ignores a focusable ROOT element — `proposed` (core / focus)
+
+Found wiring the reveal demo (`RevealDemoView` used directly as the `RunAsync` root). The activation
+auto-focus (the post-layout first-tab-stop walk, P6.1) only considers **descendants** — a focusable
+root element with no focusable descendants is never focused, so it receives no `OnGotFocus`, cannot
+publish a terminal caret, and can't drive focus-gated behavior. `EditorControl` works only because it is
+a *child* of `EditorShell`. Keys still route to the root (so it looked half-working: reveal moved on
+arrows, but no cursor). **Workaround:** dispatcher-post an explicit `Focus()` after layout settles.
+**Proposal:** include the root element itself in the activation first-tab-stop walk (or auto-focus the
+root when it is focusable and no descendant tab stop exists).

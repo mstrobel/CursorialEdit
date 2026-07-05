@@ -54,6 +54,7 @@ public sealed class RevealDemoView : Control
     private int _caretCol;
     private int _slide;
     private bool _hasFocus;
+    private bool _focusRequested;
 
     /// <summary>Creates the demo over an initial markdown document.</summary>
     /// <param name="markdown">The document text; a built-in sample when empty.</param>
@@ -77,6 +78,20 @@ public sealed class RevealDemoView : Control
         _scroll = GetTemplatePart<ScrollViewer>(PartScroll);
         _stack = GetTemplatePart<StackPanel>(PartStack);
         RebuildPresenters();
+
+        // Activation auto-focus only walks DESCENDANTS, so a focusable ROOT like this view is never
+        // auto-focused (a framework gap — see docs/framework-feedback.md). Self-focus once the layout
+        // has settled: posted to a later frame (OnApplyTemplate runs at measure, before arrange), so
+        // Focus() lands on a laid-out element. That fires OnGotFocus → the caret publishes and shows.
+        if (!_focusRequested)
+        {
+            _focusRequested = true;
+            UIApplication.Current?.Dispatcher.Post(() =>
+            {
+                if (!IsFocused)
+                    Focus();
+            });
+        }
     }
 
     // ───────────────────────────── rendering ─────────────────────────────
@@ -183,7 +198,10 @@ public sealed class RevealDemoView : Control
 
     private void PublishCaret(int activeIndex)
     {
-        if (!_hasFocus || _activePresenter is null || UIApplication.Current is not { } app)
+        // Not gated on focus: keys route to this root element regardless of the framework focus state,
+        // and the demo is the sole full-screen surface, so the caret should always be visible and
+        // follow the active line. (The production surface gates on focus — this is a demo shortcut.)
+        if (_activePresenter is null || UIApplication.Current is not { } app)
             return;
 
         // The active line is one slid row; the caret sits at (caretCell − slide) on the block's own
@@ -212,6 +230,10 @@ public sealed class RevealDemoView : Control
                 _caretCol = Math.Max(0, _caretCol - 1); ApplyReveal(); e.Handled = true; break;
             case Key.RightArrow when e.Modifiers == KeyModifiers.None:
                 _caretCol = Math.Min(_buffer.GetLine(_caretLine).Text.Length, _caretCol + 1); ApplyReveal(); e.Handled = true; break;
+            case Key.Home when e.Modifiers == KeyModifiers.None:
+                _caretCol = 0; _slide = 0; ApplyReveal(); e.Handled = true; break;
+            case Key.End when e.Modifiers == KeyModifiers.None:
+                _caretCol = _buffer.GetLine(_caretLine).Text.Length; ApplyReveal(); e.Handled = true; break;
             case Key.Backspace when e.Modifiers == KeyModifiers.None:
                 Backspace(); e.Handled = true; break;
             case Key.Character when e.Modifiers is KeyModifiers.Control && e.Text.Span.Equals("q", StringComparison.OrdinalIgnoreCase):
