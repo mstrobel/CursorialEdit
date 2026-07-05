@@ -756,8 +756,12 @@ public class EditorControl : Control, IContentRowMap
     /// </summary>
     private void OnDocumentHeightsChanged()
     {
-        if (_hasFocus && !_publishing)
-            PublishCaret();
+        // A height change (a lazily-realized block refining, or a wrap-reveal prose block reflowing as the
+        // caret enters/edits it) can push the caret's document row outside the viewport — so scroll-FOLLOW
+        // the caret, not just re-publish it. OnCaretUpdated publishes AND calls EnsureVisible; the guard keeps
+        // its VisualDocumentPosition read (which can itself refine a height) from re-entering here.
+        if (!_publishing)
+            OnCaretUpdated();
     }
 
     private void PublishCaret()

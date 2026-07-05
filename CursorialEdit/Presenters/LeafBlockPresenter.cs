@@ -372,26 +372,27 @@ public abstract class LeafBlockPresenter : UIElement
     /// </summary>
     protected virtual void RenderRows(RenderContext context, int width, int rows)
     {
-        var inactive = InactiveMapForWidth(width);
         var foreground = TextElement.GetForeground(this) ?? Brushes.Default;
         string blockText = BlockText();
+
+        // Wrap-reveal: the ACTIVE map already has the revealed line wrapped in place (marks shown) and every
+        // other line wrapped with marks hidden, so every row draws plainly from it — no slide, no clip, no
+        // reserved-blank rows, and no inactive map needed. The block's height is the active map's row count
+        // (MeasuredRowCount), so nothing is truncated. This is the prose-editing path.
+        if (_revealWraps && _activeLine is { } wrapLine && wrapLine >= 0 && wrapLine < _lines.Count)
+        {
+            var wrapMap = MapForWidth(width);
+            for (var row = 0; row < rows; row++)
+                DrawInactiveRow(context, wrapMap, row, blockText, foreground, SelectedCells(wrapMap, row, width, slide: 0));
+            return;
+        }
+
+        var inactive = InactiveMapForWidth(width);
 
         if (_activeLine is not { } line || line < 0 || line >= _lines.Count)
         {
             for (var row = 0; row < rows; row++)
                 DrawInactiveRow(context, inactive, row, blockText, foreground, SelectedCells(inactive, row, width, slide: 0));
-            return;
-        }
-
-        // Wrap-reveal: the ACTIVE map already has the revealed line wrapped in place (marks shown) and every
-        // other line wrapped with marks hidden, so every row draws plainly from it — no slide, no clip, no
-        // reserved-blank rows. The block's height is the active map's row count (MeasuredRowCount), so nothing
-        // is truncated. This is the prose-editing path; siblings below reflowed via the measure pass.
-        if (_revealWraps)
-        {
-            var wrapMap = MapForWidth(width);
-            for (var row = 0; row < rows; row++)
-                DrawInactiveRow(context, wrapMap, row, blockText, foreground, SelectedCells(wrapMap, row, width, slide: 0));
             return;
         }
 

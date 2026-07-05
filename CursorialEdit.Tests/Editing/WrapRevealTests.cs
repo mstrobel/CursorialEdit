@@ -80,6 +80,58 @@ public sealed class WrapRevealTests
     }
 
     [Fact]
+    public void TogglingEditWrapOff_SlidesToKeepTheCaretsEndOfLineVisible()
+    {
+        // Caret at the END of a long line. Toggling to slide collapses the line to one slid row — the toggle
+        // must recompute the slide (RevealActive) toward the caret, so the LINE END (where the caret is) is
+        // the visible window, not the start. Content-based (robust to terminal-cursor clamping): the last
+        // word "juliet" (at the caret) must be on screen; without the recomputed slide it would be slid off.
+        using var h = MarkdownEditingHarness.Create(LongParagraph, columns: 24, rows: 12);
+        h.Caret.MoveDocumentEnd(extend: false);
+        h.Settle();
+
+        h.Bridge.EditWrapEnabled = false;
+        h.Settle();
+
+        Assert.True(h.Host.FrameBuffer.CursorVisible);
+        Assert.True(AnyRowContains(h, "juliet"), "toggling to slide must slide toward the caret (line end), not show the start");
+    }
+
+    [Fact]
+    public void TypingThatGrowsTheBlock_ScrollFollowsTheCaretsLine()
+    {
+        // Caret in a long paragraph filling a short viewport; typing a distinctive marker grows the block and
+        // pushes the caret's line down. The reflow must scroll-follow so the just-typed marker stays visible
+        // (review finding 3). Content-based: the marker "QZX" typed at the line end must be on screen.
+        using var h = MarkdownEditingHarness.Create("top\n\n" + LongParagraph, columns: 20, rows: 6);
+        h.Caret.MoveDocumentEnd(extend: false);
+        h.Settle();
+
+        h.Type("QZX"); // a marker at the growing tail
+        h.Settle();
+
+        Assert.True(AnyRowContains(h, "QZX"), "the reflow must scroll-follow so the just-typed tail stays visible");
+    }
+
+    [Fact]
+    public void WrapReveal_ReflowFromTyping_DoesNotReRasterAnUninvolvedSibling()
+    {
+        // Caret already settled in the long paragraph (block 1). Typing grows it (reflow); block 0 above is
+        // uninvolved (not the active or previously-active block, and above the growth so it doesn't move) —
+        // it must NOT re-raster. This is the two-zone economy holding under reflow, not a re-raster storm.
+        using var h = MarkdownEditingHarness.Create("sibling above\n\n" + LongParagraph, columns: 24, rows: 12);
+        h.Caret.MoveDocumentEnd(extend: false); // into block 1
+        h.Settle();
+
+        int siblingRasters = h.Presenter(0).RenderCount; // measured AFTER the caret settled in block 1
+
+        for (var i = 0; i < 5; i++) h.Type("z"); // grow block 1 (reflow)
+        h.Settle();
+
+        Assert.Equal(siblingRasters, h.Presenter(0).RenderCount); // the uninvolved sibling did not re-raster
+    }
+
+    [Fact]
     public void WrapReveal_OnlyTheActiveBlockReflows_BlockAboveIsUnmoved()
     {
         // Two paragraphs; the SECOND is long. Put the caret in the second → it wraps-reveals (grows); the

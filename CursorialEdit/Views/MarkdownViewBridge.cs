@@ -136,15 +136,23 @@ public sealed class MarkdownViewBridge : IEditorViewSource
                 return;
 
             _editWrapEnabled = value;
-            bool wrap = value && _viewMode == ViewMode.Formatted;
             foreach (var (id, presenter) in _presenters)
             {
                 int idx = Blocks.IndexOf(id);
-                if (idx >= 0 && IsProseKind(Blocks[idx].Kind))
-                    presenter.RevealWraps = wrap; // the setter re-measures → heights reflow through the panel
+                if (idx >= 0)
+                    presenter.RevealWraps = WrapReveals(Blocks[idx].Kind); // the setter re-measures → heights reflow
             }
+
+            // Re-establish the active block's reveal under the new policy: toggling to SLIDE must recompute the
+            // horizontal slide (else the active line renders slid-to-0 with the caret possibly off-screen);
+            // toggling to WRAP drops the slide. The height reflow + scroll-follow then flow through HeightsChanged.
+            RevealActive();
         }
     }
+
+    /// <summary>Whether a block of <paramref name="kind"/> wrap-reveals its active line: prose, edit-wrap on, formatted, AND the block actually wraps.</summary>
+    private bool WrapReveals(BlockKind kind) =>
+        _editWrapEnabled && _viewMode == ViewMode.Formatted && IsProseKind(kind) && WrapModeFor(kind) == WrapMode.WordWrap;
 
     /// <inheritdoc/>
     public ISelectionSource? SelectionSource { get; set; }
@@ -217,7 +225,7 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         // Reveal-wrap (Decision 9, revised): a prose block wraps its active line in place while edited (so the
         // paragraph context stays visible) when edit-wrap is on; code/raw/rule/front-matter/table keep the
         // horizontal slide. The presenter primitive defaults to slide, so this is the one opt-in point.
-        presenter.RevealWraps = _editWrapEnabled && _viewMode == ViewMode.Formatted && IsProseKind(block.Kind);
+        presenter.RevealWraps = WrapReveals(block.Kind);
 
         presenter.MeasuredCallback = (_, rows) => RefreshHeight(id, rows);
 
@@ -376,10 +384,16 @@ public sealed class MarkdownViewBridge : IEditorViewSource
 
         // Hide the marks of the block that WAS active (only when it changed — re-clearing an already
         // inactive presenter would needlessly re-raster its zone).
-        if (_activeBlockId is { } previous && previous != activeId
-            && _presenters.TryGetValue(previous, out var prior))
+        if (_activeBlockId is { } previous && previous != activeId)
         {
-            prior.SetReveal(null);
+            if (_presenters.TryGetValue(previous, out var prior))
+                prior.SetReveal(null); // realized → re-measures to its inactive height (drops any wrap-reveal inflation)
+            else
+                // De-realized while active: its presenter is gone, so it can't re-measure — but its cached
+                // height may be the INFLATED wrap-reveal (revealed-marks) height. Drop it so the block
+                // re-estimates and refines to its inactive height when it re-realizes (else the extent stays
+                // too tall below it — the wrap-reveal analogue of the slide path's height-invariance).
+                _heights.Remove(previous);
         }
 
         _activeBlockId = activeId;
