@@ -524,3 +524,17 @@ Generalizes to every context-gated toggle (wrap-on-edit, bold/italic reflecting 
 ops greyed outside a table) with zero app bookkeeping. **Lands with the reveal-wrap View commands** (M5 command
 surface); the reveal-wrap RENDERING + config flag land earlier (after the M3 R3 gate). See
 [[feedback-reveal-wrap-decision]].
+
+## FB-28 — Input capture/automation seams (from the operation-journal build) — `proposed` (UI / input)
+
+Found building the `--journal`/`--replay` diagnostic (deterministic session capture + replay via the
+public `InputDispatcher.PreProcessInput` + `ProcessEvent`). Two gaps, both minor/worked-around:
+- **`PreProcessInput` does not fire for `ResizeEvent`/`FocusEvent`** — they return `NotUIInput` /
+  are handled in `ProcessFocusEvent` without raising the pre-process event. So a single-hook capture sees
+  only key/mouse/paste (the edit-affecting input — fine for journaling). If resize/focus capture is ever
+  wanted from one hook, raise them through `PreProcessInput` too (or expose a sibling event).
+- **No public `UIApplication` accessor for the live terminal size** — `NotifyResized` is a setter with no
+  getter; `FrameBufferInternal` is internal. The journal header takes size best-effort from
+  `Console.WindowWidth/Height`. A public `UIApplication.ViewportSize` (columns×rows) would let an app read
+  the negotiated size directly. (All INPUT fields needed were public — `KeyEventArgs.Device`,
+  `MouseEventArgs.Device`, `TextInputEventArgs.Text/FromPaste`, `ProcessEvent`, `NotifyResized`.)
