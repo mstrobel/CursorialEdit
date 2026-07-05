@@ -91,3 +91,10 @@ span-oracle literal/HTML blind spot — were fixed in the review-fix commit; the
   materialization to the active-row path. (Review finding 8.)
 - **`RunMapBuilder.GlyphFor`'s `FirstNonSpace` helper + `markerSrc.TrimStart()` are dead** — the marker
   slice always starts at a non-space. Remove the no-op defensiveness. (Review finding 9.)
+
+## WP7b review — deferred cleanup
+
+- **`MarkdownViewBridge.GetCaretMap` rebuilds a full `RunMap` on every caret query for an out-of-band
+  block** (a block not in the realized render band, e.g. after Ctrl+End into a long document), with no
+  caching — each of VisualDocumentPosition / LocateCaret / MoveVertical re-runs `RunMapBuilder.Build`
+  over the block's lines+inlines. Cache the last out-of-band (BlockId, width) → RunMap. (Review finding 4.)

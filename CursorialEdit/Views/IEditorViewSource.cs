@@ -34,8 +34,12 @@ public interface IEditorViewSource : IBlockViewSource
     /// <summary>The caret map for the block at <paramref name="blockIndex"/> (the active block's map is reveal-aware).</summary>
     ICaretMap GetCaretMap(int blockIndex);
 
-    /// <summary>The horizontal slide applied to the active block's revealed line (cells) — <c>0</c> for a non-active block or the plain surface.</summary>
-    int ActiveSlide(int blockIndex);
+    /// <summary>
+    /// The horizontal slide applied to the active block's revealed line (cells) at <paramref name="row"/> —
+    /// <c>0</c> for a non-active block, the plain surface, or any row that is NOT the block's slid active
+    /// line (only the active line is slid, so a click on another line of the active block gets no slide).
+    /// </summary>
+    int ActiveSlide(int blockIndex, int row);
 
     /// <summary>
     /// Notifies the bridge the caret moved to <paramref name="caret"/> — the markdown bridge reveals

@@ -22,9 +22,11 @@ namespace CursorialEdit.Presenters;
 /// </summary>
 public sealed class CodeBlockPresenter : LeafBlockPresenter
 {
-    private readonly CodeLanguage _language;
-    private readonly string? _fenceInfo;
-    private readonly char _fenceChar; // the opening fence character (` or ~), or '\0' for indented code
+    // Refreshed by OnContentChanged — editing the opening fence's info string (```py → ```js) is a
+    // same-kind in-place edit, so the language/fence must re-derive or the block keeps stale highlighting.
+    private CodeLanguage _language;
+    private string? _fenceInfo;
+    private char _fenceChar; // the opening fence character (` or ~), or '\0' for indented code
 
     /// <summary>Creates the presenter for a fenced or indented code block.</summary>
     /// <param name="lines">The block's source lines (fence-open, body…, fence-close for fenced code).</param>
@@ -38,10 +40,36 @@ public sealed class CodeBlockPresenter : LeafBlockPresenter
         _fenceChar = kind == BlockKind.FencedCode && lines.Count > 0 ? OpeningFenceChar(lines[0].Text) : '\0';
     }
 
+    /// <summary>Re-derives the language and fence character from the (possibly edited) opening fence line.</summary>
+    protected override void OnContentChanged()
+    {
+        if (Kind != BlockKind.FencedCode || Lines.Count == 0)
+            return;
+
+        _fenceInfo = ExtractFenceInfo(Lines[0].Text);
+        _language = MiniHighlighter.Detect(_fenceInfo);
+        _fenceChar = OpeningFenceChar(Lines[0].Text);
+    }
+
     private static char OpeningFenceChar(string text)
     {
         var span = text.AsSpan().TrimStart(' ');
         return span.Length >= 3 && (span[0] == '`' || span[0] == '~') ? span[0] : '\0';
+    }
+
+    /// <summary>The info string after the opening fence run (e.g. <c>```python</c> → <c>python</c>), or null.</summary>
+    private static string? ExtractFenceInfo(string openingLine)
+    {
+        var span = openingLine.AsSpan().TrimStart(' ');
+        if (span.Length < 3 || (span[0] != '`' && span[0] != '~'))
+            return null;
+
+        char fence = span[0];
+        int i = 0;
+        while (i < span.Length && span[i] == fence)
+            i++;
+        var info = span[i..].Trim();
+        return info.IsEmpty ? null : info.ToString();
     }
 
     /// <inheritdoc/>

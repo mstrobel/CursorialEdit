@@ -126,7 +126,7 @@ internal sealed class DocumentCaret : ISelectionSource
 
         // On the markdown surface the active line is drawn horizontally slid to keep the caret visible
         // (Decision 9); the published column is that slide subtracted. The plain surface reports slide 0.
-        return (_rows.BlockTopRow(blockIndex) + row, Math.Max(0, cell - _host.ActiveSlide(blockIndex)));
+        return (_rows.BlockTopRow(blockIndex) + row, Math.Max(0, cell - _host.ActiveSlide(blockIndex, row)));
     }
 
     // ───────────────────────────── horizontal motion ─────────────────────────────
@@ -368,7 +368,7 @@ internal sealed class DocumentCaret : ISelectionSource
 
         // On the markdown surface the active line is slid, so a click's panel cell maps back through the
         // unclipped map at cell + slide; the plain surface reports slide 0 (unchanged mapping).
-        int rel = map.NearestOffset(row, cell + _host.ActiveSlide(blockIndex));
+        int rel = map.NearestOffset(row, cell + _host.ActiveSlide(blockIndex, row));
         bool affinity = map.Locate(rel).Row != row;
         return (PositionOfBlockRel(blockIndex, rel), affinity);
     }

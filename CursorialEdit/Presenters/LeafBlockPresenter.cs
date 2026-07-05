@@ -48,7 +48,7 @@ public abstract class LeafBlockPresenter : UIElement
     private static readonly string RightIndicatorGlyph = ClipCell.RightGlyph.ToString();
 
     private readonly BlockKind _kind;
-    private readonly int? _headingLevel;
+    private int? _headingLevel; // refreshed by SetContent — a same-kind edit can change the heading level
     private readonly WrapMode _wrapMode;
 
     private IReadOnlyList<Line> _lines;
@@ -157,6 +157,15 @@ public abstract class LeafBlockPresenter : UIElement
     /// <exception cref="ArgumentNullException"><paramref name="lines"/> or <paramref name="inlineRuns"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="lines"/> is empty.</exception>
     public void SetContent(IReadOnlyList<Line> lines, IReadOnlyList<InlineRun> inlineRuns)
+        => SetContent(lines, inlineRuns, _headingLevel);
+
+    /// <summary>
+    /// As <see cref="SetContent(IReadOnlyList{Line}, IReadOnlyList{InlineRun})"/>, but also refreshes the
+    /// heading level — a same-kind edit (<c>##</c>→<c>###</c>) keeps the block's identity and is reconciled
+    /// in place, so the level (and the code language, via <see cref="OnContentChanged"/>) must update too or
+    /// the block renders with stale color/weight/highlighting until it is torn down and re-realized.
+    /// </summary>
+    public void SetContent(IReadOnlyList<Line> lines, IReadOnlyList<InlineRun> inlineRuns, int? headingLevel)
     {
         ArgumentNullException.ThrowIfNull(lines);
         ArgumentNullException.ThrowIfNull(inlineRuns);
@@ -165,6 +174,7 @@ public abstract class LeafBlockPresenter : UIElement
 
         _lines = lines;
         _inlineRuns = inlineRuns;
+        _headingLevel = headingLevel;
         _blockText = null;
         _activeMap = null;
         _activeWidth = -1;

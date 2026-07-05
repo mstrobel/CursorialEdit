@@ -88,7 +88,7 @@ public sealed class BlockViewBridge : IEditorViewSource, IBlockRunMapSource, ISe
 
     /// <inheritdoc/>
     /// <remarks>The plain surface never slides a line (no reveal), so the published caret cell is unadjusted.</remarks>
-    public int ActiveSlide(int blockIndex) => 0;
+    public int ActiveSlide(int blockIndex, int row) => 0;
 
     /// <inheritdoc/>
     /// <remarks>No reveal on the plain surface — a caret move touches no presenter's mark state.</remarks>

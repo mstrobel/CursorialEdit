@@ -50,6 +50,20 @@ public sealed class CodeBlockFixTests
     }
 
     [Fact]
+    public void ChangingTheFenceLanguage_RefreshesTheLabel()
+    {
+        // The opening fence's inactive row shows the language label; editing the info string must refresh
+        // it (WP7b review fix — SetContent re-derives the language from the new opening fence line).
+        var presenter = new CodeBlockPresenter(Lines("```csharp\ncode\n```"), BlockKind.FencedCode, "csharp");
+        var h = Show([presenter]);
+        Assert.Equal("csharp", h.Row(0).Trim());
+
+        presenter.SetContent(Lines("```json\ncode\n```"), []);
+        h.Settle();
+        Assert.Equal("json", h.Row(0).Trim()); // refreshed, not the stale "csharp"
+    }
+
+    [Fact]
     public void XamlStringEndingInBackslash_KeepsItsClosingQuote()
     {
         // <Image Source="C:\Pics\"/>  — the value ends in a backslash; XAML has no C-style escapes, so

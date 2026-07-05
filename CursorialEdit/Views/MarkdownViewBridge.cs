@@ -222,12 +222,16 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     }
 
     /// <inheritdoc/>
-    public int ActiveSlide(int blockIndex)
+    public int ActiveSlide(int blockIndex, int row)
     {
         var id = Blocks[blockIndex].Id;
-        return _activeBlockId == id && _presenters.TryGetValue(id, out var presenter) && presenter.ActiveLine is not null
-            ? presenter.SlideOffset
-            : 0;
+        if (_activeBlockId != id || !_presenters.TryGetValue(id, out var presenter) || presenter.ActiveLine is null)
+            return 0;
+
+        // Only the active LINE's row is slid; a hit-test on any other row of the same block gets no slide
+        // (else clicking a short earlier line would offset the caret by the active line's full slide).
+        var map = presenter.MapForWidth(Math.Max(1, _wrapWidth));
+        return map.IsActiveRow(row) ? presenter.SlideOffset : 0;
     }
 
     /// <inheritdoc/>
@@ -301,10 +305,12 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         foreach (var id in change.Invalidated)
             ReDeriveContent(id); // unchanged source, fresh inlines from a definition change (§2.2 step 4)
 
-        // A structural change re-derives the panel's prefix sums (and remaps realized elements by
-        // identity); a same-height content edit refines through the per-presenter MeasuredCallback and
-        // re-rasters only the touched zone.
-        if (structureMoved)
+        // Re-derive the panel's prefix sums when the row layout moved: a structural change (Added/Removed),
+        // OR any splice with a non-zero line delta — a Changed block whose LineCount grew/shrank shifts
+        // every block below it, and if that block is UNREALIZED its estimate never refines through the
+        // MeasuredCallback, so the extent would go stale without this. A same-line-count content edit
+        // (LineShift == 0) still refines the touched realized zone through MeasuredCallback alone.
+        if (structureMoved || change.LineShift != 0)
             HeightsChanged?.Invoke();
     }
 
@@ -318,7 +324,7 @@ public sealed class MarkdownViewBridge : IEditorViewSource
             return; // left the list between the change and this walk (defensive)
 
         var block = Blocks[index];
-        presenter.SetContent(BuildLines(index, block), block.InlineRuns);
+        presenter.SetContent(BuildLines(index, block), block.InlineRuns, block.HeadingLevel);
     }
 
     // ───────────────────────────── heights ─────────────────────────────
