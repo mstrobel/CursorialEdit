@@ -46,8 +46,9 @@ public sealed class TypingLatencyBenchmark(ITestOutputHelper output)
     private const int WarmupKeystrokes = 8;
     private const int MeasuredKeystrokes = 50;
     private const int MaxFramesPerKeystroke = 4; // runaway guard — a keystroke should settle in ONE frame
-    private const double TypicalBudgetMs = 16.0; // the plan's §13 typical frame budget
-    private const double HardCeilingMs = 50.0;   // the plan's hard ceiling
+    private const double TypicalBudgetMs = 16.0;         // the plan's §13 typical frame budget (gates p50)
+    private const double HardCeilingMs = 50.0;           // the plan's hard ceiling (gates p90 — sustained worst)
+    private const double CatastrophicCeilingMs = 250.0;  // a genuine hang still fails; absorbs a lone GC/JIT blip
 
     /// <summary>
     /// The typed keystrokes, cycled one rune per key event — mostly ASCII with CJK and an emoji
@@ -168,13 +169,22 @@ public sealed class TypingLatencyBenchmark(ITestOutputHelper output)
 
     private static void AssertBudget(string preset, Burst burst)
     {
+        // §13 latency gate, made robust to CI load (M2.WP13 / the deferred benchmark-flake fix): the
+        // typical budget gates p50, and the hard ceiling gates p90 — the SUSTAINED worst keystroke — not
+        // the single MAX, which a lone GC/JIT/scheduler spike under the parallel default run can trip
+        // (p50 stays ~4–8 ms while one keystroke blips ~55 ms). A separate CATASTROPHIC guard keeps a real
+        // multi-hundred-ms hang failing, so the max is still bounded, just not flake-fragile.
         Assert.True(
             burst.P50Ms < TypicalBudgetMs,
             $"typing p50 over budget ({preset}, {burst.Label}): {burst.P50Ms:F2} ms (budget {TypicalBudgetMs:F0} ms; " +
             $"p90 {burst.P90Ms:F2} ms, max {burst.MaxMs:F2} ms). sorted ms: [{burst.SortedSamples}]");
         Assert.True(
-            burst.MaxMs < HardCeilingMs,
-            $"typing max over the hard ceiling ({preset}, {burst.Label}): {burst.MaxMs:F2} ms (ceiling {HardCeilingMs:F0} ms; " +
+            burst.P90Ms < HardCeilingMs,
+            $"typing p90 over the hard ceiling ({preset}, {burst.Label}): {burst.P90Ms:F2} ms (ceiling {HardCeilingMs:F0} ms; " +
+            $"p50 {burst.P50Ms:F2} ms, max {burst.MaxMs:F2} ms). sorted ms: [{burst.SortedSamples}]");
+        Assert.True(
+            burst.MaxMs < CatastrophicCeilingMs,
+            $"typing max over the catastrophic ceiling ({preset}, {burst.Label}): {burst.MaxMs:F2} ms (ceiling {CatastrophicCeilingMs:F0} ms; " +
             $"p50 {burst.P50Ms:F2} ms, p90 {burst.P90Ms:F2} ms). sorted ms: [{burst.SortedSamples}]");
     }
 
