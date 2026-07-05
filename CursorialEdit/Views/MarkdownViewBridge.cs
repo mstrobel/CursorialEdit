@@ -155,6 +155,11 @@ public sealed class MarkdownViewBridge : IEditorViewSource
 
         presenter.MeasuredCallback = (_, rows) => RefreshHeight(id, rows);
 
+        // The selection is a document-level source range the caret installs on this bridge; the presenter
+        // intersects it with ITS block at draw time (WP8). The closure reads the live SelectionSource, so
+        // it works whether the caret attaches before or after the block realizes.
+        presenter.SelectionProvider = () => SelectionSource?.GetSelection(id);
+
         if (presenter is FrontMatterPresenter frontMatter)
         {
             void OnFold() => OnBlockHeightChanged(id);

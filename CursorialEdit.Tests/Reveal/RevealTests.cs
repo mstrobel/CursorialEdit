@@ -116,13 +116,16 @@ public sealed class RevealTests
 
         var after = harness.SnapshotCells();
 
+        // The whole block is active, so its non-active rows carry the WP9 well tint (a background-only
+        // change). The reveal no-reflow invariant is that no sibling row's CONTENT moves — assert the
+        // grapheme at every cell is unchanged (the well changes only the background, never a glyph).
         for (var row = 0; row < harness.Rows; row++)
         {
             if (row == 1)
                 continue;
 
             for (var column = 0; column < harness.Columns; column++)
-                Assert.True(before[column, row] == after[column, row],
+                Assert.True(before[column, row].Grapheme == after[column, row].Grapheme,
                     $"cell ({column},{row}) moved when a sibling line revealed");
         }
     }

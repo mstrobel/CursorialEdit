@@ -131,98 +131,236 @@ internal sealed class DocumentCaret : ISelectionSource
 
     // ───────────────────────────── horizontal motion ─────────────────────────────
 
-    /// <summary>Caret Left: the previous cluster boundary, crossing to the previous line's end at col 0.</summary>
-    public void MoveLeft(bool extend)
-    {
-        var pos = _position;
-        TextPosition target;
-        if (pos.Col > 0)
-            target = new(pos.Line, CaretNavigator.PrevCluster(_buffer.GetLine(pos.Line).Text, pos.Col));
-        else if (pos.Line > 0)
-            target = new(pos.Line - 1, _buffer.GetLine(pos.Line - 1).Text.Length);
-        else
-            target = pos;
-
-        MoveTo(target, extend, endAffinity: false);
-    }
-
-    /// <summary>Caret Right: the next cluster boundary, crossing to the next line's start at the line end.</summary>
-    public void MoveRight(bool extend)
-    {
-        var pos = _position;
-        string text = _buffer.GetLine(pos.Line).Text;
-        TextPosition target;
-        if (pos.Col < text.Length)
-            target = new(pos.Line, CaretNavigator.NextCluster(text, pos.Col));
-        else if (pos.Line < _buffer.LineCount - 1)
-            target = new(pos.Line + 1, 0);
-        else
-            target = pos;
-
-        MoveTo(target, extend, endAffinity: false);
-    }
+    /// <summary>
+    /// Caret Left: the previous <b>visible</b> caret stop (M2.WP8) — the previous grapheme cluster within
+    /// the run map's <c>Text</c>/<c>RevealedMark</c> cells, <b>structurally skipping zero-width
+    /// <c>HiddenMark</c> runs</c> (you never land inside a hidden mark) and treating a
+    /// <c>Synthetic</c> marker (bullet, <c>↵</c>) as one atomic stop, crossing to the previous line's end
+    /// at col 0. On the plain surface (only <c>Text</c> runs) this is the ordinary cluster walk.
+    /// </summary>
+    public void MoveLeft(bool extend) => MoveTo(PrevCaretPosition(_position), extend, endAffinity: false);
 
     /// <summary>
-    /// Ctrl+Right — the document-scoped composition of the probed <c>TextBox</c> word rule
-    /// (whitespace-delimited; land at the <b>end</b> of the word run): skip a whitespace run
-    /// (terminators are whitespace, so the skip crosses lines), then a word run (which never
-    /// crosses a terminator), pinned to a cluster boundary.
+    /// Caret Right: the next <b>visible</b> caret stop — the mirror of <see cref="MoveLeft"/>. Moving right
+    /// from just-before a hidden mark jumps past it to the next visible cluster's source offset; on the
+    /// active (revealed) line the marks are visible and landable, on inactive lines they are skipped.
+    /// </summary>
+    public void MoveRight(bool extend) => MoveTo(NextCaretPosition(_position), extend, endAffinity: false);
+
+    /// <summary>
+    /// Ctrl+Right — word motion over the block's <b>rendered</b> text (M2.WP8 / §2.4): the probed
+    /// <c>TextBox</c> whitespace rule (skip a whitespace run, then a word run, land at the word's
+    /// <b>end</b>) applied to the concatenated <b>visible</b> clusters — <b>hidden marks are skipped</b>
+    /// (word boundaries are computed on what's rendered, not the raw source: an inactive <c>**bold**</c>
+    /// navigates as <c>bold</c>), a terminator/line cross is whitespace, and every stop is canonicalized to
+    /// a visible caret position. On the plain surface (no marks) this reduces to the raw whitespace rule.
     /// </summary>
     public void MoveWordRight(bool extend)
     {
-        int line = _position.Line;
-        int col = _position.Col;
+        var pos = Visible(_position);
 
-        while (true)
-        {
-            string text = _buffer.GetLine(line).Text;
-            while (col < text.Length && char.IsWhiteSpace(text[col]))
-                col++;
+        pos = StepWordRight(pos, char.IsWhiteSpace); // skip the whitespace run to the next word grapheme
+        pos = StepWordRight(pos, c => !char.IsWhiteSpace(c)); // consume the word run to its end
 
-            if (col >= text.Length && line < _buffer.LineCount - 1)
-            {
-                line++;
-                col = 0;
-                continue;
-            }
-
-            break;
-        }
-
-        string landingText = _buffer.GetLine(line).Text;
-        while (col < landingText.Length && !char.IsWhiteSpace(landingText[col]))
-            col++;
-
-        MoveTo(new(line, CaretNavigator.SnapToCluster(landingText, col)), extend, endAffinity: false);
+        MoveTo(pos, extend, endAffinity: false);
     }
 
-    /// <summary>Ctrl+Left — the mirror walk: skip whitespace backward (crossing line starts), then the word run backward.</summary>
+    /// <summary>Ctrl+Left — the mirror walk over rendered text: skip the whitespace run backward (crossing line starts, skipping hidden marks), then the word run back to its start.</summary>
     public void MoveWordLeft(bool extend)
     {
-        int line = _position.Line;
-        int col = _position.Col;
+        var pos = Visible(_position);
 
-        while (true)
+        pos = StepWordLeft(pos, char.IsWhiteSpace);
+        pos = StepWordLeft(pos, c => !char.IsWhiteSpace(c));
+
+        MoveTo(pos, extend, endAffinity: false);
+    }
+
+    /// <summary>Advances forward over the maximal run of visible graphemes satisfying <paramref name="take"/> (a terminator/line cross reads as whitespace; the document end stops the walk).</summary>
+    private TextPosition StepWordRight(TextPosition pos, Func<char, bool> take)
+    {
+        while (VisibleCharAt(pos) is { } c && take(c))
         {
-            string text = _buffer.GetLine(line).Text;
-            while (col > 0 && char.IsWhiteSpace(text[col - 1]))
-                col--;
-
-            if (col == 0 && line > 0)
-            {
-                line--;
-                col = _buffer.GetLine(line).Text.Length;
-                continue;
-            }
-
-            break;
+            var next = NextVisibleStop(pos);
+            if (next == pos)
+                break; // document end
+            pos = next;
         }
 
-        string landingText = _buffer.GetLine(line).Text;
-        while (col > 0 && !char.IsWhiteSpace(landingText[col - 1]))
-            col--;
+        return pos;
+    }
 
-        MoveTo(new(line, CaretNavigator.SnapToCluster(landingText, col)), extend, endAffinity: false);
+    /// <summary>Retreats over the maximal run of visible graphemes whose predecessor satisfies <paramref name="take"/> (the mirror of <see cref="StepWordRight"/>).</summary>
+    private TextPosition StepWordLeft(TextPosition pos, Func<char, bool> take)
+    {
+        while (VisibleCharBefore(pos) is { } c && take(c))
+        {
+            var prev = PrevVisibleStop(pos);
+            if (prev == pos)
+                break; // document start
+            pos = prev;
+        }
+
+        return pos;
+    }
+
+    // ───────────────────────────── run-aware caret-stop stepping ─────────────────────────────
+
+    /// <summary>
+    /// The next visible caret stop after <paramref name="pos"/> (M2.WP8): the next source cluster that
+    /// occupies a <b>distinct display cell</b> from <paramref name="pos"/> on its block's run map, so
+    /// zero-width hidden marks and the atomic remainder of a synthetic marker are skipped; a source-line
+    /// cross is always a visible move. Returns <paramref name="pos"/> unchanged at the document end.
+    /// </summary>
+    private TextPosition NextCaretPosition(TextPosition pos)
+    {
+        bool hasCell = TryCell(pos, out int originCell);
+        var cur = pos;
+        while (RawNext(cur) is { } next)
+        {
+            if (next.Line != pos.Line)
+                return next;                    // crossed a source line — always a visible move
+            if (!hasCell)
+                return next;                    // pre-layout — behave as the plain source cluster walk
+            if (!TryCell(next, out int cell) || cell != originCell)
+                return next;                    // a distinct display cell — a real move
+            cur = next;                         // same cell (a zero-width hidden mark) — keep skipping
+        }
+
+        return cur; // document end
+    }
+
+    /// <summary>The previous visible caret stop before <paramref name="pos"/> — the mirror of <see cref="NextCaretPosition"/>.</summary>
+    private TextPosition PrevCaretPosition(TextPosition pos)
+    {
+        bool hasCell = TryCell(pos, out int originCell);
+        var cur = pos;
+        while (RawPrev(cur) is { } prev)
+        {
+            if (prev.Line != pos.Line)
+                return prev;
+            if (!hasCell)
+                return prev;
+            if (!TryCell(prev, out int cell) || cell != originCell)
+                return prev;
+            cur = prev;
+        }
+
+        return cur;
+    }
+
+    /// <summary>The next source cluster boundary, crossing to the next line's start at the line end (null at the document end).</summary>
+    private TextPosition? RawNext(TextPosition pos)
+    {
+        string text = _buffer.GetLine(pos.Line).Text;
+        if (pos.Col < text.Length)
+            return new(pos.Line, CaretNavigator.NextCluster(text, pos.Col));
+        if (pos.Line < _buffer.LineCount - 1)
+            return new(pos.Line + 1, 0);
+        return null;
+    }
+
+    /// <summary>The previous source cluster boundary, crossing to the previous line's end at col 0 (null at the document start).</summary>
+    private TextPosition? RawPrev(TextPosition pos)
+    {
+        if (pos.Col > 0)
+            return new(pos.Line, CaretNavigator.PrevCluster(_buffer.GetLine(pos.Line).Text, pos.Col));
+        if (pos.Line > 0)
+            return new(pos.Line - 1, _buffer.GetLine(pos.Line - 1).Text.Length);
+        return null;
+    }
+
+    /// <summary>The display cell <paramref name="pos"/> maps to on its block's run map, or <see langword="false"/> pre-layout (no geometry yet).</summary>
+    private bool TryCell(TextPosition pos, out int cell)
+    {
+        cell = 0;
+        if (_rows.ContentRows <= 0)
+            return false;
+
+        int blockIndex = Blocks.IndexOfLine(pos.Line);
+        var map = GetMap(blockIndex);
+        int rel = _buffer.GetOffset(pos) - BlockStartOffset(blockIndex);
+        cell = map.Locate(rel).Cell;
+        return true;
+    }
+
+    // ───────────────────────────── visible-text stepping (word motion) ─────────────────────────────
+
+    /// <summary>
+    /// Snaps <paramref name="pos"/> to the <b>canonical visible</b> offset at its rendered cell (M2.WP8):
+    /// the block's run map collapses hidden marks onto the following content's cell, and
+    /// <c>OffsetAt(cell)</c> returns that content's source offset — so a position sitting on a hidden mark
+    /// canonicalizes to the visible grapheme it renders under. On the active (revealed) line, and on the
+    /// plain surface, the marks are visible and this is the identity.
+    /// </summary>
+    private TextPosition Visible(TextPosition pos)
+    {
+        if (_rows.ContentRows <= 0)
+            return pos;
+
+        int blockIndex = Blocks.IndexOfLine(pos.Line);
+        var map = GetMap(blockIndex);
+        int rel = _buffer.GetOffset(pos) - BlockStartOffset(blockIndex);
+        var (row, cell) = map.Locate(rel);
+        return PositionOfBlockRel(blockIndex, map.OffsetAt(row, cell));
+    }
+
+    /// <summary>The next distinct <b>visible</b> caret stop after <paramref name="pos"/> — hidden marks are skipped (they canonicalize onto their content); a line cross canonicalizes into the new line's visible content.</summary>
+    private TextPosition NextVisibleStop(TextPosition pos)
+    {
+        var origin = Visible(pos);
+        var cur = origin;
+        while (RawNext(cur) is { } next)
+        {
+            if (next.Line != origin.Line)
+                return Visible(next);
+            var visible = Visible(next);
+            if (visible != origin)
+                return visible;
+            cur = next;
+        }
+
+        return origin; // document end
+    }
+
+    /// <summary>The previous distinct visible caret stop before <paramref name="pos"/> — the mirror of <see cref="NextVisibleStop"/>.</summary>
+    private TextPosition PrevVisibleStop(TextPosition pos)
+    {
+        var origin = Visible(pos);
+        var cur = origin;
+        while (RawPrev(cur) is { } prev)
+        {
+            if (prev.Line != origin.Line)
+                return Visible(prev);
+            var visible = Visible(prev);
+            if (visible != origin)
+                return visible;
+            cur = prev;
+        }
+
+        return origin; // document start
+    }
+
+    /// <summary>The visible grapheme at <paramref name="pos"/> for the word rule: the source char (marks are canonical), a space at a line end (the terminator), or <see langword="null"/> at the document end.</summary>
+    private char? VisibleCharAt(TextPosition pos)
+    {
+        string text = _buffer.GetLine(pos.Line).Text;
+        if (pos.Col < text.Length)
+            return text[pos.Col];
+        return pos.Line < _buffer.LineCount - 1 ? ' ' : null; // line end = terminator whitespace; last line = document end
+    }
+
+    /// <summary>The visible grapheme immediately before <paramref name="pos"/>: the char at the previous visible stop, a space across a line boundary, or <see langword="null"/> at the document start.</summary>
+    private char? VisibleCharBefore(TextPosition pos)
+    {
+        var prev = PrevVisibleStop(pos);
+        if (prev == pos)
+            return null; // document start
+        if (prev.Line != pos.Line)
+            return ' '; // crossed a terminator — whitespace
+
+        string text = _buffer.GetLine(prev.Line).Text;
+        return prev.Col < text.Length ? text[prev.Col] : ' ';
     }
 
     // ───────────────────────────── vertical motion ─────────────────────────────

@@ -63,10 +63,16 @@ public sealed class PresenterRevealTests
         harness.SetActive(block: 1, activeLine: 0); // reveal the blockquote's `>`
         Assert.Equal("> quoted", harness.RowTrimmed(quoteRow));
 
+        // The active block's whole box carries the WP9 well tint (its content + any trailing separator
+        // rows) — that is inside the active zone, so exclude the block's full row range; every cell
+        // OUTSIDE it must be bit-for-bit unchanged (the §4.1 no-reflow invariant, well included).
+        int activeTop = harness.TopRow(1);
+        int activeBottom = activeTop + harness.Height(1);
+
         var after = harness.SnapshotCells();
         for (var row = 0; row < harness.Rows; row++)
         {
-            if (row == quoteRow)
+            if (row >= activeTop && row < activeBottom)
                 continue;
 
             for (var column = 0; column < harness.Columns; column++)

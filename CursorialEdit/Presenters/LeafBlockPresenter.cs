@@ -5,6 +5,7 @@ using Cursorial.Rendering.Text;
 using Cursorial.Text;
 using Cursorial.UI;
 using Cursorial.UI.Controls;
+using Cursorial.UI.Themes;
 
 using CursorialEdit.Document.Buffer;
 using CursorialEdit.Document.Model;
@@ -116,6 +117,14 @@ public abstract class LeafBlockPresenter : UIElement
     /// sums. Unset by default (the harness measures presenters directly).
     /// </summary>
     internal Action<LeafBlockPresenter, int>? MeasuredCallback { get; set; }
+
+    /// <summary>
+    /// The document-selection probe for this block (M2.WP8): the WP7b bridge sets it to
+    /// <c>() =&gt; SelectionSource?.GetSelection(id)</c> so the presenter can intersect the live
+    /// document selection with its own block <b>at draw time</b> (architecture §2.3/§2.4) and paint the
+    /// selection fill across the selected cells. Unset by default (no selection is painted).
+    /// </summary>
+    internal Func<(int Start, int End)?>? SelectionProvider { get; set; }
 
     /// <summary>
     /// The block's rendered height in terminal rows at <paramref name="width"/> cells — the height the
@@ -250,7 +259,14 @@ public abstract class LeafBlockPresenter : UIElement
         int width = Math.Max(1, context.Size.Columns);
         int rows = Math.Min(MeasuredRowCount(width), bounds.Rows);
 
+        // Backgrounds are painted BEFORE the content, over the still-empty cells, then the rows draw with a
+        // transparent glyph background that lets the fills show through (DrawText's contract) — so a wide
+        // cluster is written whole by the row pass and its wide-cell bookkeeping is never disturbed by a
+        // per-cell background write. Order: block fill (code), then the subtle active-block well (§4.3),
+        // then the selection fill on top so a selection reads over the well. None changes the height (WP9).
         PaintBackground(context, width, rows);
+        PaintActiveWell(context, width, rows);
+        PaintSelection(context, width, rows);
         RenderRows(context, width, rows);
     }
 
@@ -376,6 +392,92 @@ public abstract class LeafBlockPresenter : UIElement
                     break;
             }
         }
+    }
+
+    // ───────────────────────────── active-block well + selection ─────────────────────────────
+
+    /// <summary>
+    /// Paints the <c>:active-block</c> well tint behind the block when it is active (§4.3 / WP9): a faint
+    /// translucent scrim across the block's box so the user sees which block the caret is in. A no-op for
+    /// inactive blocks — so a caret crossing a block boundary re-rasters exactly the block left (well
+    /// removed) and the block entered (well added), the two-zone gate.
+    /// </summary>
+    protected virtual void PaintActiveWell(RenderContext context, int width, int rows)
+    {
+        if (_activeLine is null || width <= 0 || rows <= 0)
+            return;
+
+        context.PaintRectangle(new Rect(0, 0, width, rows), MarkdownStyles.ActiveWellBrush);
+    }
+
+    /// <summary>
+    /// Paints the document selection's fill across this block's selected cells (M2.WP8): the selection is
+    /// a block-relative source range (<see cref="SelectionProvider"/>) threaded through the same run maps
+    /// the rows drew from — the inactive map for formatted rows, the active (slid) map for the revealed
+    /// row — so a partially-selected wide cluster fills whole and a zero-width hidden mark fills nothing.
+    /// The fill is a glyph-transparent scrim, so the formatted text/marks show through highlighted.
+    /// </summary>
+    protected virtual void PaintSelection(RenderContext context, int width, int rows)
+    {
+        if (SelectionProvider?.Invoke() is not { } selection)
+            return;
+
+        var (selStart, selEnd) = selection;
+        if (selEnd <= selStart)
+            return;
+
+        if (!(this.TryFindResource(ThemeKeys.SelectionBrush, out var value) && value is IBrush brush))
+            return;
+
+        var inactive = InactiveMapForWidth(width);
+        int? activeLine = _activeLine is { } line && line >= 0 && line < _lines.Count ? line : null;
+        int activeDrawRow = -1, activeMapRow = -1;
+        RunMap? active = null;
+        if (activeLine is { } al)
+        {
+            active = MapForWidth(width);
+            activeDrawRow = inactive.RowsOfLine(al).FirstRow;
+            activeMapRow = active.RowsOfLine(al).FirstRow;
+        }
+
+        for (var row = 0; row < rows; row++)
+        {
+            if (activeLine is { } al2 && inactive.LineOfRow(row) == al2)
+            {
+                // The active line renders as one slid row at activeDrawRow; its reserved wrapped rows are
+                // blank (nothing to highlight there — height-invariance).
+                if (row == activeDrawRow && active is { } activeMap)
+                    PaintRowSelection(context, activeMap, activeMapRow, row, width, selStart, selEnd, brush, _slideOffset);
+                continue;
+            }
+
+            PaintRowSelection(context, inactive, row, row, width, selStart, selEnd, brush, slide: 0);
+        }
+    }
+
+    /// <summary>
+    /// Fills the selection's intersection with one visual row: the block-relative <c>[selStart, selEnd)</c>
+    /// is clamped to the row's source span and its ends mapped to cells through <paramref name="map"/>
+    /// (minus the active line's <paramref name="slide"/>, clamped into the viewport), then drawn as a
+    /// background scrim across those cells.
+    /// </summary>
+    private static void PaintRowSelection(
+        RenderContext context, RunMap map, int mapRow, int drawRow, int width,
+        int selStart, int selEnd, IBrush brush, int slide)
+    {
+        int rowStartSrc = map.OffsetAt(mapRow, 0);
+        int rowEndSrc = map.RowEndOffset(mapRow);
+        int fromSrc = Math.Max(selStart, rowStartSrc);
+        int toSrc = Math.Min(selEnd, rowEndSrc);
+        if (toSrc <= fromSrc)
+            return;
+
+        int fromCell = Math.Clamp(map.Locate(fromSrc, endAffinity: false).Cell - slide, 0, width);
+        int toCell = Math.Clamp(map.Locate(toSrc, endAffinity: true).Cell - slide, 0, width);
+        if (toCell <= fromCell)
+            return; // the selected span collapsed to zero-width cells (a hidden mark) — nothing to paint
+
+        context.PaintRectangle(new Rect(fromCell, drawRow, toCell - fromCell, 1), brush);
     }
 
     // ───────────────────────────── styling hooks ─────────────────────────────

@@ -22,6 +22,18 @@ internal static class MarkdownStyles
     /// <summary>SGR 2 (faint) — revealed syntax marks and the continuation indicators. Degrades to nothing on tiers without it while the glyph keeps its cell.</summary>
     public static readonly CellStyle Dim = CellStyle.Default.WithAttributes(TextAttributes.Faint);
 
+    /// <summary>
+    /// The <c>:active-block</c> well tint (§4.3 / M2.WP9): a faint translucent scrim the active block's
+    /// presenter paints behind its content so the user sees which block the caret is in. It is
+    /// <b>translucent</b> (low alpha) so it blends subtly over prose on the truecolor wire; on the
+    /// 16-color wire it quantizes to a distinct-but-muted background. WP11's <c>Md.*</c> theme layer will
+    /// later hand this through <c>ThemeDictionaries</c> keyed by <c>ThemeVariantKey</c>.
+    /// </summary>
+    public static readonly Color ActiveWellColor = Color.FromRgba(94, 118, 171, 42);
+
+    /// <summary>The <c>:active-block</c> well brush.</summary>
+    public static readonly IBrush ActiveWellBrush = new SolidColorBrush(ActiveWellColor);
+
     /// <summary>The code-fill background (a muted grey that survives the 16-color wire; drops on NoColor).</summary>
     public static readonly Color CodeFillColor = Colors.LightBlack;
 
