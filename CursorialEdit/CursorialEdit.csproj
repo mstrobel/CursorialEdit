@@ -12,12 +12,14 @@
 
   <ItemGroup Condition="'$(UseLocalCursorial)' != 'true'">
     <PackageReference Include="Cursorial.UI.Bars" Version="$(CursorialPackageVersion)" />
+    <PackageReference Include="Cursorial.UI.Dialogs" Version="$(CursorialPackageVersion)" />
     <PackageReference Include="Cursorial.UI.Xaml" Version="$(CursorialPackageVersion)" />
     <PackageReference Include="Cursorial.UI.Xaml.Generator" Version="$(CursorialPackageVersion)" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(UseLocalCursorial)' == 'true'">
     <ProjectReference Include="$(CursorialRepoRoot)Cursorial.UI.Bars\Cursorial.UI.Bars.csproj" />
+    <ProjectReference Include="$(CursorialRepoRoot)Cursorial.UI.Dialogs\Cursorial.UI.Dialogs.csproj" />
     <ProjectReference Include="$(CursorialRepoRoot)Cursorial.UI.Xaml\Cursorial.UI.Xaml.csproj" />
     <ProjectReference Include="$(CursorialRepoRoot)Cursorial.UI.Xaml.Generator\Cursorial.UI.Xaml.Generator.csproj"
                       OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
@@ -25,7 +27,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CursorialEdit.Document\CursorialEdit.Document.csproj" />
-    <ProjectReference Include="..\CursorialEdit.Dialogs\CursorialEdit.Dialogs.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -3,7 +3,7 @@ using Cursorial.UI;
 using Cursorial.UI.Controls;
 using Cursorial.UI.Input;
 
-using CursorialEdit.Dialogs;
+using Cursorial.UI.Dialogs;
 using CursorialEdit.Document.Buffer;
 using CursorialEdit.Document.Editing;
 using CursorialEdit.Document.Model;

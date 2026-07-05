@@ -1,4 +1,4 @@
-using CursorialEdit.Dialogs;
+using Cursorial.UI.Dialogs;
 
 namespace CursorialEdit.Tests.Files;
 

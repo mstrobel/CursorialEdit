@@ -11,7 +11,7 @@ using Cursorial.Rendering;
 using Cursorial.UI.Testing;
 
 using CursorialEdit.App;
-using CursorialEdit.Dialogs;
+using Cursorial.UI.Dialogs;
 using CursorialEdit.Document.Buffer;
 using CursorialEdit.Document.Editing;
 using CursorialEdit.Document.Persistence;

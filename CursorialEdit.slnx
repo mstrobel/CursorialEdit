@@ -13,6 +13,5 @@
     <File Path="docs\tokyo-night-terminal-markdown-editor.html" />
     <File Path="docs\user-configuration.md" />
   </Folder>
-  <Project Path="CursorialEdit.Dialogs/CursorialEdit.Dialogs.csproj" />
   <Project Path="CursorialEdit.Tests/CursorialEdit.Tests.csproj" />
 </Solution>
