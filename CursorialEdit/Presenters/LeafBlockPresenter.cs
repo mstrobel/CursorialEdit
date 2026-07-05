@@ -59,10 +59,12 @@ public abstract class LeafBlockPresenter : UIElement
 
     private int? _activeLine;
     private int _slideOffset;
+    private bool _revealWraps; // false = slide reveal (default); true = wrap-in-place reveal (prose, edit-wrap)
 
     private RunMap? _activeMap;
     private int _activeWidth = -1;
     private int? _activeMapActive = -2; // sentinel distinct from every real int? and from null
+    private bool _activeMapWraps;       // the reveal policy the cached active map was built with
 
     private RunMap? _inactiveMap;
     private int _inactiveWidth = -1;
@@ -138,6 +140,27 @@ public abstract class LeafBlockPresenter : UIElement
     /// <summary>The horizontal slide offset applied to the active line's one un-wrapped row (cells).</summary>
     public int SlideOffset => _slideOffset;
 
+    /// <summary>
+    /// The reveal policy (Decision 9, revised): <see langword="false"/> (default) = <b>slide</b> — the active
+    /// line un-wraps to one horizontally-slid row, line-count invariant (code/raw/table cells, and prose when
+    /// edit-wrap is off). <see langword="true"/> = <b>wrap-reveal</b> — the active prose line wraps in place
+    /// with its marks shown, and the block <b>reflows</b> (its height varies while active), so the surrounding
+    /// paragraph context stays visible while editing. The production bridge opts prose blocks into this when
+    /// edit-wrap is on and the block wraps; the presenter primitive defaults to slide.
+    /// </summary>
+    public bool RevealWraps
+    {
+        get => _revealWraps;
+        set
+        {
+            if (_revealWraps == value)
+                return;
+            _revealWraps = value;
+            InvalidateMeasure(); // the height authority changes (inactive vs active map)
+            InvalidateVisual();
+        }
+    }
+
     /// <summary>Number of <see cref="Render"/> calls — the reveal raster observable (toggling reveal re-rasters exactly this zone).</summary>
     public int RenderCount { get; private set; }
 
@@ -192,8 +215,15 @@ public abstract class LeafBlockPresenter : UIElement
     /// </summary>
     public void SetReveal(int? activeLine, int slideOffset = 0)
     {
+        bool activeChanged = _activeLine != activeLine;
         _activeLine = activeLine;
         _slideOffset = Math.Max(0, slideOffset);
+
+        // In wrap-reveal the active line wraps in place, so activating/deactivating (or moving to a line that
+        // wraps to a different depth) changes the block's height — re-measure so the reflow propagates through
+        // the panel's prefix sums. Slide-reveal is height-invariant (Decision 9), so it only re-rasters.
+        if (_revealWraps && activeChanged)
+            InvalidateMeasure();
         InvalidateVisual();
     }
 
@@ -244,13 +274,14 @@ public abstract class LeafBlockPresenter : UIElement
     public RunMap MapForWidth(int width)
     {
         width = Math.Max(1, width);
-        if (_activeMap is { } cached && _activeWidth == width && _activeMapActive == _activeLine)
+        if (_activeMap is { } cached && _activeWidth == width && _activeMapActive == _activeLine && _activeMapWraps == _revealWraps)
             return cached;
 
         var map = BuildMap(width, _activeLine);
         _activeMap = map;
         _activeWidth = width;
         _activeMapActive = _activeLine;
+        _activeMapWraps = _revealWraps;
         return map;
     }
 
@@ -276,7 +307,7 @@ public abstract class LeafBlockPresenter : UIElement
     /// identity map (source verbatim, 1:1 source↔cell) without disturbing the formatted layout.
     /// </summary>
     protected virtual RunMap BuildMap(int width, int? activeLine) =>
-        RunMapBuilder.Build(_lines, _inlineRuns, _kind, _headingLevel, width, _wrapMode, activeLine);
+        RunMapBuilder.Build(_lines, _inlineRuns, _kind, _headingLevel, width, _wrapMode, activeLine, revealSlides: !_revealWraps);
 
     /// <inheritdoc/>
     protected override Size MeasureOverride(Size availableSize)
@@ -287,8 +318,16 @@ public abstract class LeafBlockPresenter : UIElement
         return new Size(width, rows);
     }
 
-    /// <summary>The block's rendered height in rows — the inactive layout's row count (height-invariant).</summary>
-    protected virtual int MeasuredRowCount(int width) => InactiveMapForWidth(width).RowCount;
+    /// <summary>
+    /// The block's rendered height in rows. Slide-reveal is height-invariant → the inactive layout's row
+    /// count always (the revealed slid row draws within the reserved rows). Wrap-reveal lets the active
+    /// block reflow → the ACTIVE layout's row count (the revealed line wrapped in place may occupy more/fewer
+    /// rows than hidden), so the block grows/shrinks while active and content below shifts.
+    /// </summary>
+    protected virtual int MeasuredRowCount(int width) =>
+        _revealWraps && _activeLine is not null
+            ? MapForWidth(width).RowCount
+            : InactiveMapForWidth(width).RowCount;
 
     /// <inheritdoc/>
     protected override void Render(RenderContext context)
@@ -341,6 +380,18 @@ public abstract class LeafBlockPresenter : UIElement
         {
             for (var row = 0; row < rows; row++)
                 DrawInactiveRow(context, inactive, row, blockText, foreground, SelectedCells(inactive, row, width, slide: 0));
+            return;
+        }
+
+        // Wrap-reveal: the ACTIVE map already has the revealed line wrapped in place (marks shown) and every
+        // other line wrapped with marks hidden, so every row draws plainly from it — no slide, no clip, no
+        // reserved-blank rows. The block's height is the active map's row count (MeasuredRowCount), so nothing
+        // is truncated. This is the prose-editing path; siblings below reflowed via the measure pass.
+        if (_revealWraps)
+        {
+            var wrapMap = MapForWidth(width);
+            for (var row = 0; row < rows; row++)
+                DrawInactiveRow(context, wrapMap, row, blockText, foreground, SelectedCells(wrapMap, row, width, slide: 0));
             return;
         }
 

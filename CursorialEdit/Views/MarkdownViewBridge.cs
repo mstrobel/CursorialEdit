@@ -74,6 +74,9 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     /// <summary>The render mode (Formatted = WYSIWYG, Raw = verbatim source); drives presenter selection, caret maps, and reveal gating.</summary>
     private ViewMode _viewMode = ViewMode.Formatted;
 
+    /// <summary>Whether the active prose line wraps in place while edited (reveal-wrap) vs. slides (Decision 9 revised). Default on.</summary>
+    private bool _editWrapEnabled = true;
+
     /// <summary>
     /// Creates the bridge over <paramref name="producer"/>'s block list, reading source lines from
     /// <paramref name="buffer"/>, and subscribes to the producer's change feed.
@@ -116,6 +119,30 @@ public sealed class MarkdownViewBridge : IEditorViewSource
             _heights.Clear();      // formatted heights are meaningless in raw mode and vice versa — re-estimate by line count
             _activeBlockId = null; // raw mode has no active block; formatted re-reveals on the next caret publish
             HeightsChanged?.Invoke();
+        }
+    }
+
+    /// <summary>
+    /// Whether the active prose line wraps in place while edited (reveal-wrap, Decision 9 revised) or slides
+    /// (the pre-revision behavior). Default <see langword="true"/>. The "wrap while editing" View command
+    /// (M5) drives this; toggling it re-applies the policy to every realized prose presenter and reflows.
+    /// </summary>
+    public bool EditWrapEnabled
+    {
+        get => _editWrapEnabled;
+        set
+        {
+            if (_editWrapEnabled == value)
+                return;
+
+            _editWrapEnabled = value;
+            bool wrap = value && _viewMode == ViewMode.Formatted;
+            foreach (var (id, presenter) in _presenters)
+            {
+                int idx = Blocks.IndexOf(id);
+                if (idx >= 0 && IsProseKind(Blocks[idx].Kind))
+                    presenter.RevealWraps = wrap; // the setter re-measures → heights reflow through the panel
+            }
         }
     }
 
@@ -187,6 +214,11 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         var id = block.Id;
         var presenter = SelectPresenter(index, block);
 
+        // Reveal-wrap (Decision 9, revised): a prose block wraps its active line in place while edited (so the
+        // paragraph context stays visible) when edit-wrap is on; code/raw/rule/front-matter/table keep the
+        // horizontal slide. The presenter primitive defaults to slide, so this is the one opt-in point.
+        presenter.RevealWraps = _editWrapEnabled && _viewMode == ViewMode.Formatted && IsProseKind(block.Kind);
+
         presenter.MeasuredCallback = (_, rows) => RefreshHeight(id, rows);
 
         // The selection is a document-level source range the caret installs on this bridge; the presenter
@@ -219,6 +251,10 @@ public sealed class MarkdownViewBridge : IEditorViewSource
 
         return presenter;
     }
+
+    /// <summary>The prose block kinds whose active line wraps in place under reveal-wrap (Decision 9 revised); everything else keeps the slide.</summary>
+    private static bool IsProseKind(BlockKind kind) =>
+        kind is BlockKind.Paragraph or BlockKind.Heading or BlockKind.Quote or BlockKind.List;
 
     private LeafBlockPresenter SelectPresenter(int index, Block block)
     {
@@ -350,6 +386,14 @@ public sealed class MarkdownViewBridge : IEditorViewSource
 
         if (!_presenters.TryGetValue(activeId, out var active))
             return; // active block is off the realized band — CreatePresenter reveals it when it realizes
+
+        // Wrap-reveal: the active line wraps within the viewport, so there is no horizontal slide — the caret
+        // stays visible by ordinary vertical scroll-follow. Just reveal the line (height reflows via measure).
+        if (active.RevealWraps)
+        {
+            active.SetReveal(lineInBlock, 0);
+            return;
+        }
 
         int viewport = Math.Max(1, _wrapWidth);
         int prevSlide = active.SlideOffset;

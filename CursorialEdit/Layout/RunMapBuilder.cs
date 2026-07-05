@@ -61,6 +61,14 @@ public static class RunMapBuilder
     /// <param name="wrapWidth">The soft-wrap cell budget (≤ 0 disables wrapping).</param>
     /// <param name="wrapMode">Wrap-on (<see cref="WrapMode.WordWrap"/>, default) or wrap-off (<see cref="WrapMode.NoWrap"/>, one row per logical line).</param>
     /// <param name="activeLine">The revealed active line, or <see langword="null"/> for an inactive block.</param>
+    /// <param name="revealSlides">
+    /// The reveal policy for the active line (Decision 9). <see langword="true"/> (default) = <b>slide</b>:
+    /// the revealed line is force-unwrapped to one row (the caller slides it horizontally) — line-count
+    /// invariant. <see langword="false"/> = <b>wrap</b>: the revealed line wraps in place under
+    /// <paramref name="wrapMode"/> with its marks shown, so a prose paragraph keeps its surrounding context
+    /// while edited (the block reflows). Ignored when <paramref name="wrapMode"/> is
+    /// <see cref="WrapMode.NoWrap"/> (nothing to wrap, so the line is one row either way).
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="lines"/> or <paramref name="inlineRuns"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="lines"/> is empty.</exception>
     public static RunMap Build(
@@ -70,7 +78,8 @@ public static class RunMapBuilder
         int? headingLevel = null,
         int wrapWidth = 0,
         WrapMode wrapMode = WrapMode.WordWrap,
-        int? activeLine = null)
+        int? activeLine = null,
+        bool revealSlides = true)
     {
         ArgumentNullException.ThrowIfNull(lines);
         ArgumentNullException.ThrowIfNull(inlineRuns);
@@ -113,7 +122,10 @@ public static class RunMapBuilder
                 marker, markerStart, markerLen, hardBreakLen, revealed,
                 out string display, out int[] toDisplay, out int[] toSrc);
 
-            wrapped[i] = CaretNavigator.Wrap(display, wrapWidth, revealed ? WrapMode.NoWrap : wrapMode);
+            // A revealed line is force-unwrapped only in SLIDE mode; in wrap-reveal it wraps in place under
+            // the block's wrapMode (marks shown), so a prose paragraph keeps its context while edited.
+            var lineWrap = revealed && revealSlides ? WrapMode.NoWrap : wrapMode;
+            wrapped[i] = CaretNavigator.Wrap(display, wrapWidth, lineWrap);
             srcToDisplay[i] = toDisplay;
             displayToSrc[i] = toSrc;
             lineFirstRow[i] = rowRuns.Count;
