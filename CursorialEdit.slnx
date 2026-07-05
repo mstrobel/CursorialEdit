@@ -1,6 +1,18 @@
 <Solution>
   <Project Path="CursorialEdit/CursorialEdit.csproj" />
   <Project Path="CursorialEdit.Document/CursorialEdit.Document.csproj" />
+  <Folder Name="/Docs/">
+    <File Path="docs\architecture.md" />
+    <File Path="docs\conformance.md" />
+    <File Path="docs\cursorial-integration-notes.md" />
+    <File Path="docs\deferred-cleanups.md" />
+    <File Path="docs\framework-feedback.md" />
+    <File Path="docs\icon-ledger.md" />
+    <File Path="docs\implementation-plan.md" />
+    <File Path="docs\markdown-editor-v1-feature-spec.md" />
+    <File Path="docs\tokyo-night-terminal-markdown-editor.html" />
+    <File Path="docs\user-configuration.md" />
+  </Folder>
   <Project Path="CursorialEdit.Dialogs/CursorialEdit.Dialogs.csproj" />
   <Project Path="CursorialEdit.Tests/CursorialEdit.Tests.csproj" />
 </Solution>
