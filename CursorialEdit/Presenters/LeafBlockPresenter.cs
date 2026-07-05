@@ -231,8 +231,12 @@ public abstract class LeafBlockPresenter : UIElement
         return map;
     }
 
-    /// <summary>Builds a run map for this block at <paramref name="width"/> with the given active line.</summary>
-    protected RunMap BuildMap(int width, int? activeLine) =>
+    /// <summary>
+    /// Builds a run map for this block at <paramref name="width"/> with the given active line. Virtual so
+    /// a mode-specialized presenter (the M2.WP10 <see cref="RawSourcePresenter"/>) can substitute an
+    /// identity map (source verbatim, 1:1 source↔cell) without disturbing the formatted layout.
+    /// </summary>
+    protected virtual RunMap BuildMap(int width, int? activeLine) =>
         RunMapBuilder.Build(_lines, _inlineRuns, _kind, _headingLevel, width, _wrapMode, activeLine);
 
     /// <inheritdoc/>

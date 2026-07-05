@@ -80,6 +80,13 @@ public sealed class BlockViewBridge : IEditorViewSource, IBlockRunMapSource, ISe
     /// <summary>The live block list (owned by the producer).</summary>
     public BlockList Blocks => _producer.Blocks;
 
+    /// <summary>
+    /// The render mode (M2.WP10). Plain text has no syntax marks to hide, so raw and formatted render
+    /// identically here — the value is stored for interface parity but does not change what a
+    /// <c>PlainTextPresenter</c> draws.
+    /// </summary>
+    public ViewMode ViewMode { get; set; } = ViewMode.Formatted;
+
     // ───────────────────────────── IEditorViewSource (the caret seam) ─────────────────────────────
 
     /// <inheritdoc/>

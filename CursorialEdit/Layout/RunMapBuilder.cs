@@ -137,6 +137,83 @@ public static class RunMapBuilder
             sourceLength, wrapWidth, wrapMode, activeLine);
     }
 
+    /// <summary>
+    /// Builds an <b>identity</b> run map for raw-source view mode (architecture Decision 12 / M2.WP10):
+    /// every source line renders verbatim as one visual row (wrap-off, so the block's height is its raw
+    /// line count), with every character a <see cref="RunKind.Text"/> cell — nothing hidden, nothing
+    /// revealed, no synthetic markers, no active-line reveal. The source↔cell mapping is 1:1 (source
+    /// offset <c>N</c> sits at cell <c>N</c>), so the caret walks raw source directly and every existing
+    /// caret/selection/find operation works unchanged; syntax-token coloring is a presenter concern layered
+    /// on top (<see cref="Presenters.RawSourcePresenter"/>), never a mapping change.
+    /// </summary>
+    /// <param name="lines">The block's source lines (≥ 1).</param>
+    /// <param name="wrapWidth">The horizontal cell budget (retained for row-width/clip queries; wrap-off never collapses height).</param>
+    /// <exception cref="ArgumentNullException"><paramref name="lines"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="lines"/> is empty.</exception>
+    public static RunMap BuildRaw(IReadOnlyList<Line> lines, int wrapWidth = 0)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        if (lines.Count == 0)
+            throw new ArgumentException("A block owns at least one line.", nameof(lines));
+
+        int lineCount = lines.Count;
+        var lineSrcStart = new int[lineCount + 1];
+        var lineTextLen = new int[lineCount];
+        for (var i = 0; i < lineCount; i++)
+        {
+            lineTextLen[i] = lines[i].Text.Length;
+            lineSrcStart[i + 1] = lineSrcStart[i] + lines[i].TotalLength;
+        }
+
+        int sourceLength = lineSrcStart[lineCount];
+
+        // Identity classification: no marks, no content wins/loses, no inline style — every character
+        // classifies as visible Content (a Text run), so the display string equals the source verbatim.
+        var mark = new bool[sourceLength];
+        var content = new bool[sourceLength];
+        var style = new RunStyle[sourceLength];
+
+        var wrapped = new WrappedLine[lineCount];
+        var srcToDisplay = new int[lineCount][];
+        var displayToSrc = new int[lineCount][];
+        var lineFirstRow = new int[lineCount + 1];
+
+        var rowRuns = new List<Run[]>();
+        var rowCells = new List<RowCluster[]>();
+        var rowWidth = new List<int>();
+        var rowLine = new List<int>();
+
+        for (var i = 0; i < lineCount; i++)
+        {
+            var pieces = ClassifyLine(
+                lines[i].Text, lineSrcStart[i], mark, content, style,
+                marker: SegKind.Content, markerStart: 0, markerLen: 0, hardBreakLen: 0, revealed: false,
+                out string display, out int[] toDisplay, out int[] toSrc);
+
+            wrapped[i] = CaretNavigator.Wrap(display, wrapWidth, WrapMode.NoWrap);
+            srcToDisplay[i] = toDisplay;
+            displayToSrc[i] = toSrc;
+            lineFirstRow[i] = rowRuns.Count;
+
+            for (var r = 0; r < wrapped[i].RowCount; r++)
+            {
+                var (runs, cells) = BuildRow(display, wrapped[i], r, pieces);
+                rowRuns.Add(runs);
+                rowCells.Add(cells);
+                rowWidth.Add(wrapped[i].RowWidth(r));
+                rowLine.Add(i);
+            }
+        }
+
+        lineFirstRow[lineCount] = rowRuns.Count;
+
+        return new RunMap(
+            [.. rowRuns], [.. rowCells], [.. rowWidth], [.. rowLine],
+            wrapped, srcToDisplay, displayToSrc,
+            lineFirstRow, lineSrcStart, lineTextLen,
+            sourceLength, wrapWidth, WrapMode.NoWrap, activeLine: null);
+    }
+
     private static string BuildBlockText(IReadOnlyList<Line> lines, int sourceLength)
     {
         var sb = new StringBuilder(sourceLength);

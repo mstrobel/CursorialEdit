@@ -71,6 +71,9 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     /// <summary>The block whose line is currently revealed (the active block), or <see langword="null"/> when none.</summary>
     private BlockId? _activeBlockId;
 
+    /// <summary>The render mode (Formatted = WYSIWYG, Raw = verbatim source); drives presenter selection, caret maps, and reveal gating.</summary>
+    private ViewMode _viewMode = ViewMode.Formatted;
+
     /// <summary>
     /// Creates the bridge over <paramref name="producer"/>'s block list, reading source lines from
     /// <paramref name="buffer"/>, and subscribes to the producer's change feed.
@@ -91,6 +94,30 @@ public sealed class MarkdownViewBridge : IEditorViewSource
 
     /// <inheritdoc/>
     public int WrapWidth => _wrapWidth;
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Switching mode drops the cached exact heights (formatted wrapped-row counts and raw line counts are
+    /// unrelated) and clears the active block (raw mode has none), then raises
+    /// <see cref="HeightsChanged"/> so the panel re-derives its prefix sums and extent from the line-count
+    /// estimate — the realized presenters refine to exact as they re-measure. The presenter <i>swap</i>
+    /// itself (formatted suite ⇄ <see cref="RawSourcePresenter"/>) is driven by the control re-realizing the
+    /// panel, since the presenter type — not just its content — changes.
+    /// </remarks>
+    public ViewMode ViewMode
+    {
+        get => _viewMode;
+        set
+        {
+            if (_viewMode == value)
+                return;
+
+            _viewMode = value;
+            _heights.Clear();      // formatted heights are meaningless in raw mode and vice versa — re-estimate by line count
+            _activeBlockId = null; // raw mode has no active block; formatted re-reveals on the next caret publish
+            HeightsChanged?.Invoke();
+        }
+    }
 
     /// <inheritdoc/>
     public ISelectionSource? SelectionSource { get; set; }
@@ -189,6 +216,11 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     private LeafBlockPresenter SelectPresenter(int index, Block block)
     {
         var lines = BuildLines(index, block);
+
+        // Raw mode: every block renders verbatim through the one raw presenter regardless of kind (§4.2).
+        if (_viewMode == ViewMode.Raw)
+            return new RawSourcePresenter(lines, block.Kind);
+
         return block.Kind switch
         {
             BlockKind.Heading or BlockKind.Paragraph =>
@@ -219,8 +251,12 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         if (_presenters.TryGetValue(block.Id, out var presenter))
             return presenter.MapForWidth(Math.Max(1, _wrapWidth));
 
-        // The caret jumped to a block outside the realized band (Ctrl+End). Build its inactive map
-        // directly — the one place a caret query realizes a block's inlines off the render band.
+        // The caret jumped to a block outside the realized band (Ctrl+End). Build its map directly —
+        // the one place a caret query realizes a block off the render band. In raw mode that is the
+        // identity map (source verbatim, 1:1); in formatted mode the block's inactive map.
+        if (_viewMode == ViewMode.Raw)
+            return RunMapBuilder.BuildRaw(BuildLines(blockIndex, block), Math.Max(1, _wrapWidth));
+
         return RunMapBuilder.Build(
             BuildLines(blockIndex, block), block.InlineRuns, block.Kind, block.HeadingLevel,
             Math.Max(1, _wrapWidth), WrapModeFor(block.Kind), activeLine: null);
@@ -254,6 +290,10 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     /// </summary>
     private void RevealActive()
     {
+        // Raw mode shows every mark literally — no reveal, no active-line slide, no active-block well.
+        if (_viewMode == ViewMode.Raw)
+            return;
+
         if (_caret is not { } caret || Blocks.Count == 0)
             return;
 

@@ -190,6 +190,20 @@ public sealed class DocumentPanel : Panel, IScrollContentHost
         InvalidateMeasure();
     }
 
+    /// <summary>
+    /// Tears down every realized child and re-realizes the cover on the next measure — the M2.WP10
+    /// view-mode swap (formatted suite ⇄ <c>RawSourcePresenter</c>), where the presenter <b>type</b>
+    /// changes for every block, so the identity-remap reuse (<see cref="InvalidateRealization"/> alone)
+    /// would keep the wrong-mode presenters. The caret is a source anchor, unaffected by the swap.
+    /// </summary>
+    public void RefreshRealizations()
+    {
+        VerifyAccess();
+        DerealizeAll();
+        _realizationDirty = true;
+        InvalidateMeasure();
+    }
+
     /// <inheritdoc/>
     public int LineStep(int currentOffset, int sign, bool vertical) => 1;
 

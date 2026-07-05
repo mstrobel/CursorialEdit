@@ -28,6 +28,15 @@ public interface IEditorViewSource : IBlockViewSource
     /// <summary>The current layout wrap width in cells (0 until the first viewport arrives).</summary>
     int WrapWidth { get; }
 
+    /// <summary>
+    /// The render mode (M2.WP10 / Decision 12): <see cref="ViewMode.Formatted"/> (WYSIWYG, the default) or
+    /// <see cref="ViewMode.Raw"/> (verbatim source with token coloring). Setting it switches which presenter
+    /// each block realizes into and re-estimates block heights; the caret's source anchor is mode-independent,
+    /// so it is preserved across the toggle. The markdown bridge honors both modes; the plain-text bridge has
+    /// no marks to hide, so raw and formatted render identically there.
+    /// </summary>
+    ViewMode ViewMode { get; set; }
+
     /// <summary>Creates (and registers) the presenter for the block at <paramref name="index"/> — the panel's block factory.</summary>
     UIElement CreatePresenter(int index);
 

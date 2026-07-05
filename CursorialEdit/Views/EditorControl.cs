@@ -308,6 +308,17 @@ public class EditorControl : Control, IContentRowMap
         if (e.Handled)
             return;
 
+        // View-mode toggle (M2.WP10): Ctrl+/ on the Kitty wire, Alt+/ the legacy-safe alternate — the
+        // legacy wire can't distinguish Ctrl+/ (it decodes to the ignored 0x1F byte, FB-14.1). Both chords
+        // are bound unconditionally, mirroring the dual Ctrl+Shift+Z / Ctrl+Y redo arm: whichever the wire
+        // can deliver fires. Handled before the caret branch because Alt chords otherwise bubble there.
+        if (_bridge is not null && IsViewModeToggle(e))
+        {
+            ToggleViewMode();
+            e.Handled = true;
+            return;
+        }
+
         if (_caret is { } caret)
         {
             OnDocumentKeyDown(e, caret);
@@ -491,6 +502,44 @@ public class EditorControl : Control, IContentRowMap
 
     private static bool IsLetter(KeyEventArgs e, char lower)
         => e.Text.Length == 1 && char.ToLowerInvariant(e.Text.Span[0]) == lower;
+
+    // ───────────────────────────── view mode (M2.WP10) ─────────────────────────────
+
+    /// <summary>The surface's current render mode; <see cref="ViewMode.Formatted"/> when no document is attached.</summary>
+    public ViewMode ViewMode => _bridge?.ViewMode ?? ViewMode.Formatted;
+
+    /// <summary>
+    /// Toggles the surface between <see cref="ViewMode.Formatted"/> (WYSIWYG) and <see cref="ViewMode.Raw"/>
+    /// (verbatim source) — the M2.WP10 raw-mode toggle (Ctrl+/ / Alt+/). The whole surface switches mode;
+    /// the caret's source position is preserved (it is a mode-independent source anchor). A no-op when no
+    /// document is attached.
+    /// </summary>
+    public void ToggleViewMode()
+    {
+        if (_bridge is { } bridge)
+            SetViewMode(bridge.ViewMode == ViewMode.Formatted ? ViewMode.Raw : ViewMode.Formatted);
+    }
+
+    /// <summary>Sets the render mode: switches the bridge, re-realizes every block's presenter, and re-anchors the caret.</summary>
+    private void SetViewMode(ViewMode mode)
+    {
+        if (_bridge is not { } bridge || bridge.ViewMode == mode)
+            return;
+
+        bridge.ViewMode = mode;         // drops cached heights + active block, raises HeightsChanged (extent re-derives)
+        _panel?.RefreshRealizations();  // swap every block's presenter type (formatted suite ⇄ raw) on the next measure
+        if (_hasFocus)
+            PublishCaret();             // re-anchor the terminal caret at its (mode-independent) source position
+    }
+
+    /// <summary>Whether <paramref name="e"/> is the view-mode toggle chord (Ctrl+/ or Alt+/, no other modifier).</summary>
+    private static bool IsViewModeToggle(KeyEventArgs e)
+    {
+        if (e.Key != Key.Character || e.Text.Length != 1 || e.Text.Span[0] != '/')
+            return false;
+
+        return e.Modifiers is KeyModifiers.Control or KeyModifiers.Alt;
+    }
 
     // ───────────────────────────── clipboard (M1.WP9) ─────────────────────────────
 
