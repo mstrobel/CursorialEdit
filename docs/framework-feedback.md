@@ -469,28 +469,38 @@ landing against the layout it will actually render. Bounded (a cell or two, lead
 deferred, but the missing seam is the root cause. **Proposal (app-side):** let the caret query a block's
 run map for an arbitrary hypothetical active line, so vertical landings resolve against the post-reveal layout.
 
-## FB-27 — `CheckableCommandParameter` needs proposed-vs-effective checked state — `proposed` (Bars / commands)
+## FB-27 — Command-owned checked state via coercion + `Handled`; move parameter to Cursorial.UI — `discussed` (core / commands)
 
-Raised by Mike, 2026-07-05, designing the "wrap while editing" toggle command (which must show
-greyed + unchecked when "wrap for display" is off — the option is moot without display wrap).
+Raised by Mike, 2026-07-05, designing the "wrap while editing" toggle command (must show greyed +
+unchecked when "wrap for display" is off — the option is moot without display wrap). Design converged
+2026-07-05 (Mike drove it):
 
-**Proposal.** Add `ProposedIsChecked` (the persisted user preference) alongside the existing `IsChecked`
-(the effective/displayed state) on the mutable `CheckableCommandParameter`. `IsChecked` is seeded from
-`ProposedIsChecked` and recomputed by the command handler on each `CanExecuteChanged`:
-`IsChecked = available && ProposedIsChecked; CanExecute = available;`. Paired with `CanExecute=false`, the
-handler trivially forces greyed + unchecked while the preference survives in `ProposedIsChecked` and snaps
-back when the gate reopens.
+**Chosen design (coercion, not a proposed/effective field pair).**
+- Move `ICheckableCommandParameter` / `CheckableCommandParameter` from `Cursorial.UI.Bars` into
+  `Cursorial.UI` proper (it binds to `ToggleButton` + the coercion pipeline, both in UI; only incidentally
+  in Bars). Make it the **default** command parameter a checkable control uses when the app provides none.
+- Add a `Handled` flag to the parameter. Register a **coercion callback** on `ToggleButton.IsChecked`
+  (the framework has the full pipeline — `RecoerceLocal`/`IsCoerced`/base-vs-coerced in `EffectiveValue`):
+  when `Handled`, coerce the effective checked state to the parameter's value (override); when NOT handled,
+  return the base value unchanged — **normal toggle behavior, `IsChecked` untouched.** So `Handled` is a
+  pure opt-in and existing checkable commands are unaffected (backward-compatible at zero cost).
+- The user's preference is preserved as the DP **base value** by the coercion system — **no ProposedIsChecked
+  field, no restore-on-reavailable bookkeeping.** For wrap-on-edit: display-wrap off → command sets
+  `Handled=true` + forced value + `CanExecute=false` → greyed + (unchecked or checked, per the forced value);
+  the preference reappears automatically when `Handled` clears.
 
-**Notes for implementation:**
-- The control-facing `ICheckableCommandParameter { bool IsChecked }` interface is UNCHANGED — `BarToggleButton`
-  reads only the effective `IsChecked` (`SetCurrentValue(IsCheckedProperty, (bool?)checkable.IsChecked)`). So
-  this is a **non-breaking additive** change to the mutable carrier; existing checkable commands are untouched.
-- It **generalizes**: the split lets each command pick its disabled display — greyed+unchecked (`IsChecked=false`)
-  or greyed+checked / "on but locked" (`IsChecked=ProposedIsChecked`). `IsChecked`-alone can't express both.
-- Consider a carrier helper `ApplyAvailability(bool available)` → sets `IsChecked` from `ProposedIsChecked`
-  (returns it), so handlers don't hand-write the mapping. `CanExecute` stays on the command.
-- Works today with `IsChecked`-only if the app holds the preference in side-state; `ProposedIsChecked` just
-  co-locates it on the carrier. Endorsed because the pattern recurs (context-gated toggles: wrap-on-edit,
-  table-only ops, etc.).
-- **Lands with the reveal-wrap View commands** (M5 command surface); the reveal-wrap RENDERING + config flag
-  land earlier (after the M3 R3 gate). See [[feedback-reveal-wrap-decision]].
+**Implementation notes / open points (from the consuming seat):**
+1. **Re-coercion trigger:** the parameter isn't a DP, so `Handled`/value changes won't auto-invalidate. The
+   control must `CoerceValue(IsCheckedProperty)` on the `CanExecuteChanged`/`OnCommandStateChanged` hook it
+   already uses to re-query command state — the single wiring point; the signal already exists.
+2. **Where the default parameter lives (interacts with the "one command drives every surface" invariant in
+   `CommandParameters.cs`):** mint the auto-default **once per command (on `BarCommand`) and share it** across
+   all controls bound to it — NOT per control, or two surfaces hosting the same toggle diverge. Each control
+   mirrors `IsChecked` from the shared parameter as its base value and coerces display locally.
+3. **What `Handled` coerces TO:** coerce to a parameter-specified value (not a hardcoded `false`) → gives
+   greyed+checked ("on but locked") for free alongside greyed+unchecked.
+
+Generalizes to every context-gated toggle (wrap-on-edit, bold/italic reflecting the caret's run, table-context
+ops greyed outside a table) with zero app bookkeeping. **Lands with the reveal-wrap View commands** (M5 command
+surface); the reveal-wrap RENDERING + config flag land earlier (after the M3 R3 gate). See
+[[feedback-reveal-wrap-decision]].
