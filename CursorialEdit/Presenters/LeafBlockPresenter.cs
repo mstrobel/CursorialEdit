@@ -102,6 +102,29 @@ public abstract class LeafBlockPresenter : UIElement
     /// <summary>Number of <see cref="Render"/> calls — the reveal raster observable (toggling reveal re-rasters exactly this zone).</summary>
     public int RenderCount { get; private set; }
 
+    /// <summary>
+    /// De-realization hook for the WP7b <c>MarkdownViewBridge</c>'s presenter registry: invoked once
+    /// from <see cref="UIElement.TearDown"/> so the bridge never keeps a dead presenter (mirrors the
+    /// M1 <c>PlainTextPresenter</c>). Unset by default (the harness stacks presenters directly).
+    /// </summary>
+    internal Action<LeafBlockPresenter>? TornDownCallback { get; set; }
+
+    /// <summary>
+    /// Height-refine hook for the WP7b bridge (mirrors <c>BlockViewBridge</c>'s realize-time refine):
+    /// invoked from <see cref="MeasureOverride"/> with the row count just measured, so the bridge learns
+    /// a realized block's exact (possibly re-wrapped or folded) height and reconciles the panel's prefix
+    /// sums. Unset by default (the harness measures presenters directly).
+    /// </summary>
+    internal Action<LeafBlockPresenter, int>? MeasuredCallback { get; set; }
+
+    /// <summary>
+    /// The block's rendered height in terminal rows at <paramref name="width"/> cells — the height the
+    /// WP7b bridge feeds the panel's prefix sums so slot heights match what this presenter draws (the
+    /// inactive, reveal-invariant row count, folded for front matter). Public projection of
+    /// <see cref="MeasuredRowCount"/>.
+    /// </summary>
+    public int MeasuredHeight(int width) => MeasuredRowCount(Math.Max(1, width));
+
     /// <summary>The block's structural kind.</summary>
     protected BlockKind Kind => _kind;
 
@@ -197,7 +220,9 @@ public abstract class LeafBlockPresenter : UIElement
     protected override Size MeasureOverride(Size availableSize)
     {
         int width = Math.Max(1, availableSize.Columns);
-        return new Size(width, MeasuredRowCount(width));
+        int rows = MeasuredRowCount(width);
+        MeasuredCallback?.Invoke(this, rows);
+        return new Size(width, rows);
     }
 
     /// <summary>The block's rendered height in rows — the inactive layout's row count (height-invariant).</summary>
@@ -217,6 +242,15 @@ public abstract class LeafBlockPresenter : UIElement
 
         PaintBackground(context, width, rows);
         RenderRows(context, width, rows);
+    }
+
+    /// <inheritdoc/>
+    protected override void OnTearDown()
+    {
+        var callback = TornDownCallback;
+        TornDownCallback = null;
+        callback?.Invoke(this);
+        base.OnTearDown();
     }
 
     /// <summary>Paints a background before the rows draw (code fill, active-block tint). Default no-op.</summary>

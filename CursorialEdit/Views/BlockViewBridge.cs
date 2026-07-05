@@ -52,7 +52,7 @@ namespace CursorialEdit.Views;
 /// realize (§2.3 estimate-then-refine) instead of an O(document) rewrap per width tick.
 /// </para>
 /// </remarks>
-public sealed class BlockViewBridge : IBlockViewSource, IBlockRunMapSource, ISelectionSource
+public sealed class BlockViewBridge : IEditorViewSource, IBlockRunMapSource, ISelectionSource
 {
     private readonly IDocumentBuffer _buffer;
     private readonly PlainTextBlockProducer _producer;
@@ -79,6 +79,24 @@ public sealed class BlockViewBridge : IBlockViewSource, IBlockRunMapSource, ISel
 
     /// <summary>The live block list (owned by the producer).</summary>
     public BlockList Blocks => _producer.Blocks;
+
+    // ───────────────────────────── IEditorViewSource (the caret seam) ─────────────────────────────
+
+    /// <inheritdoc/>
+    /// <remarks>The plain-text surface has no reveal, so the caret map is simply the block's M1 <see cref="BlockRunMap"/>.</remarks>
+    public ICaretMap GetCaretMap(int blockIndex) => GetRunMap(Blocks[blockIndex].Id, _wrapWidth);
+
+    /// <inheritdoc/>
+    /// <remarks>The plain surface never slides a line (no reveal), so the published caret cell is unadjusted.</remarks>
+    public int ActiveSlide(int blockIndex) => 0;
+
+    /// <inheritdoc/>
+    /// <remarks>No reveal on the plain surface — a caret move touches no presenter's mark state.</remarks>
+    public void OnCaretPositioned(TextPosition caret) { }
+
+    /// <inheritdoc/>
+    IEnumerable<KeyValuePair<BlockId, UIElement>> IEditorViewSource.RealizedPresenters =>
+        _presenters.Select(kv => new KeyValuePair<BlockId, UIElement>(kv.Key, kv.Value));
 
     // ───────────────────────────── IBlockHeightSource ─────────────────────────────
 
@@ -215,7 +233,7 @@ public sealed class BlockViewBridge : IBlockViewSource, IBlockRunMapSource, ISel
     /// unwrapped). The WP8 caret passes this back through <see cref="GetRunMap"/> so its cell math
     /// uses exactly the maps the presenters render from.
     /// </summary>
-    internal int WrapWidth => _wrapWidth;
+    public int WrapWidth => _wrapWidth;
 
     /// <summary>
     /// Cumulative count of run-map builds (test observability): a resize storm must rebuild maps

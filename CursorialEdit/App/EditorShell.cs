@@ -57,6 +57,8 @@ public sealed class EditorShell : DockPanel
     /// <summary>Status note when saving an untitled document (Save As is M6 — plan §6 WP11).</summary>
     internal const string UntitledSaveNote = "no file path — Save As arrives in M6";
 
+    private readonly EditorView _view = new();
+
     private DocumentFile? _file;
     private DocumentKey? _documentKey;
     private AutosaveJournal? _journal;
@@ -78,8 +80,6 @@ public sealed class EditorShell : DockPanel
         ArgumentNullException.ThrowIfNull(startupOptions);
         StartupOptions = startupOptions;
 
-        Editor = new EditorControl();
-
         // The dirty-dot slot: a reserved two-cell TextBlock ("● " when dirty) so toggling the
         // dirty state never reflows the status line.
         DirtyDotPart = new TextBlock { Text = string.Empty, Width = 2 };
@@ -94,11 +94,14 @@ public sealed class EditorShell : DockPanel
         StatusLinePart.Children.Add(StatusTextPart); // last child fills the rest of the row
 
         Children.Add(StatusLinePart);
-        Children.Add(Editor); // LastChildFill (default): the editor takes every remaining row
+        Children.Add(_view); // LastChildFill (default): the editor view takes every remaining row
     }
 
-    /// <summary>The document surface. Later packages wire its height source, presenters, and input.</summary>
-    public EditorControl Editor { get; }
+    /// <summary>The instantiable document surface (EditorControl + panel + presenter feed) — §3.2 resolution 12.</summary>
+    public EditorView View => _view;
+
+    /// <summary>The document surface control (focus owner, caret, input) hosted by <see cref="View"/>.</summary>
+    public EditorControl Editor => _view.Editor;
 
     /// <summary>The parsed CLI options this shell was launched with (<see cref="OpenStartupDocument"/> consumes <see cref="AppStartupOptions.FilePath"/>).</summary>
     public AppStartupOptions StartupOptions { get; }
@@ -139,11 +142,11 @@ public sealed class EditorShell : DockPanel
         set => _appStatePaths = value ?? throw new ArgumentNullException(nameof(value));
     }
 
-    /// <summary>The degenerate WP7 block producer feeding the surface (test observability; M2 replaces the producer, not the seam).</summary>
-    internal PlainTextBlockProducer? BlockProducer { get; private set; }
+    /// <summary>The Markdig block producer feeding the surface (test observability); its parse output drives the formatted, reveal-on-edit render.</summary>
+    internal MarkdigBlockProducer? BlockProducer { get; private set; }
 
-    /// <summary>The pipeline↔surface bridge serving heights, run maps, and presenters (test observability).</summary>
-    internal BlockViewBridge? ViewBridge { get; private set; }
+    /// <summary>The markdown pipeline↔surface bridge serving heights, presenters, and reveal (test observability).</summary>
+    internal MarkdownViewBridge? ViewBridge { get; private set; }
 
     /// <summary>The open document's file identity, or <see langword="null"/> for untitled (test observability).</summary>
     internal DocumentFile? FilePart => _file;
@@ -272,8 +275,8 @@ public sealed class EditorShell : DockPanel
     /// <summary>
     /// Builds the document pipeline over <paramref name="content"/> and wires it to the editor
     /// surface: <see cref="DocumentBuffer"/> → <see cref="EditController"/> →
-    /// <see cref="PlainTextBlockProducer"/> → <see cref="BlockViewBridge"/> →
-    /// <see cref="EditorControl.HeightSource"/>/<see cref="EditorControl.BlockFactory"/>.
+    /// <see cref="MarkdigBlockProducer"/> → <see cref="MarkdownViewBridge"/> (via <see cref="EditorView"/>) →
+    /// the <see cref="Presenters.LeafBlockPresenter"/> suite — the formatted, reveal-on-edit render.
     /// Re-wiring (a subsequent call) replaces the whole pipeline; the previous document's
     /// presenters are de-realized by the factory swap and its producer unsubscribed.
     /// Pipeline-only: the file lifecycle methods above call this and additionally manage file
@@ -293,13 +296,13 @@ public sealed class EditorShell : DockPanel
 
         Document = new DocumentBuffer(content);
         Controller = new EditController(Document, timeProvider);
-        BlockProducer = new PlainTextBlockProducer(Controller);
-        ViewBridge = new BlockViewBridge(Document, BlockProducer);
+        BlockProducer = new MarkdigBlockProducer(Controller);
 
-        // The WP8 attachment seam: installs the bridge as the panel's height/presenter source AND
-        // the real source-anchored caret + selection + typing path over the same controller
-        // (replacing the direct HeightSource/BlockFactory wiring the shell did pre-WP8).
-        Editor.AttachDocument(Controller, ViewBridge);
+        // Factor the whole formatted, reveal-on-edit surface through the instantiable EditorView (§3.2
+        // resolution 12): it builds a MarkdownViewBridge over the producer's block list and attaches it
+        // — the real source-anchored caret + selection + typing path over the same controller.
+        _view.Attach(Controller, BlockProducer);
+        ViewBridge = _view.Bridge;
     }
 
     // ───────────────────────────── keyboard ─────────────────────────────

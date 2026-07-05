@@ -61,7 +61,7 @@ internal sealed class DocumentCaret : ISelectionSource
 
     private readonly IDocumentBuffer _buffer;
     private readonly EditController _controller;
-    private readonly BlockViewBridge _bridge;
+    private readonly IEditorViewSource _host;
     private readonly IContentRowMap _rows;
 
     private TextPosition _position;
@@ -83,15 +83,15 @@ internal sealed class DocumentCaret : ISelectionSource
     private readonly Dictionary<BlockId, (int Start, int End)> _selectionPainted = [];
 
     /// <summary>Creates the caret at the document origin.</summary>
-    public DocumentCaret(EditController controller, BlockViewBridge bridge, IContentRowMap rows)
+    public DocumentCaret(EditController controller, IEditorViewSource host, IContentRowMap rows)
     {
         ArgumentNullException.ThrowIfNull(controller);
-        ArgumentNullException.ThrowIfNull(bridge);
+        ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(rows);
 
         _controller = controller;
         _buffer = controller.Buffer;
-        _bridge = bridge;
+        _host = host;
         _rows = rows;
     }
 
@@ -110,7 +110,7 @@ internal sealed class DocumentCaret : ISelectionSource
     /// <summary>Whether a non-empty selection exists.</summary>
     public bool HasSelection => _anchor is { } anchor && anchor != _position;
 
-    private BlockList Blocks => _bridge.Blocks;
+    private BlockList Blocks => _host.Blocks;
 
     // ───────────────────────────── visual mapping ─────────────────────────────
 
@@ -123,7 +123,10 @@ internal sealed class DocumentCaret : ISelectionSource
     {
         var (blockIndex, map, rel) = LocateCaret();
         var (row, cell) = map.Locate(rel, _endAffinity);
-        return (_rows.BlockTopRow(blockIndex) + row, cell);
+
+        // On the markdown surface the active line is drawn horizontally slid to keep the caret visible
+        // (Decision 9); the published column is that slide subtracted. The plain surface reports slide 0.
+        return (_rows.BlockTopRow(blockIndex) + row, Math.Max(0, cell - _host.ActiveSlide(blockIndex)));
     }
 
     // ───────────────────────────── horizontal motion ─────────────────────────────
@@ -269,8 +272,7 @@ internal sealed class DocumentCaret : ISelectionSource
     {
         var (blockIndex, map, rel) = LocateCaret();
         int row = map.Locate(rel, _endAffinity).Row;
-        var run = map.RunsForRow(row)[0];
-        int endRel = run.SrcStart + run.SrcLen;
+        int endRel = map.RowEndOffset(row);
         bool affinity = map.Locate(endRel).Row != row;
         MoveTo(PositionOfBlockRel(blockIndex, endRel), extend, affinity);
     }
@@ -364,14 +366,9 @@ internal sealed class DocumentCaret : ISelectionSource
         var map = GetMap(blockIndex);
         int row = Math.Clamp(contentRow - _rows.BlockTopRow(blockIndex), 0, map.RowCount - 1);
 
-        var text = map.RowText(row);
-        int before = CaretNavigator.ColAtOrBeforeCell(text, cell);
-        int after = CaretNavigator.NextCluster(text, before);
-        int chosen = after == before || cell - CaretNavigator.CellOfCol(text, before) <= CaretNavigator.CellOfCol(text, after) - cell
-            ? before
-            : after;
-
-        int rel = map.RunsForRow(row)[0].SrcStart + chosen;
+        // On the markdown surface the active line is slid, so a click's panel cell maps back through the
+        // unclipped map at cell + slide; the plain surface reports slide 0 (unchanged mapping).
+        int rel = map.NearestOffset(row, cell + _host.ActiveSlide(blockIndex));
         bool affinity = map.Locate(rel).Row != row;
         return (PositionOfBlockRel(blockIndex, rel), affinity);
     }
@@ -647,6 +644,11 @@ internal sealed class DocumentCaret : ISelectionSource
 
     private void AfterStateChange()
     {
+        // Reveal-on-edit: the surface reveals the caret's active line and re-hides the prior block's
+        // marks (markdown); the plain surface no-ops. Done before the owner republishes so the caret
+        // publishes through the revealed, slid map.
+        _host.OnCaretPositioned(_position);
+
         var (newStart, newEnd) = CurrentAbsoluteSelection();
 
         // Diff each block's block-relative selection range against what it last painted, keyed by id.
@@ -657,7 +659,7 @@ internal sealed class DocumentCaret : ISelectionSource
         var previous = _selectionPainted.Count == 0 ? null : new Dictionary<BlockId, (int, int)>(_selectionPainted);
         _selectionPainted.Clear();
 
-        foreach (var (id, presenter) in _bridge.RealizedPresenters)
+        foreach (var (id, presenter) in _host.RealizedPresenters)
         {
             int index = Blocks.IndexOf(id);
             if (index < 0)
@@ -693,7 +695,7 @@ internal sealed class DocumentCaret : ISelectionSource
 
     // ───────────────────────────── mapping helpers ─────────────────────────────
 
-    private (int BlockIndex, BlockRunMap Map, int Rel) LocateCaret()
+    private (int BlockIndex, ICaretMap Map, int Rel) LocateCaret()
     {
         // Defensive re-validation: the owner's HeightsChanged republish observes the caret
         // DURING a splice's notification chain — after the buffer moved, before this caret's own
@@ -708,7 +710,7 @@ internal sealed class DocumentCaret : ISelectionSource
         return (blockIndex, map, rel);
     }
 
-    private BlockRunMap GetMap(int blockIndex) => _bridge.GetRunMap(Blocks[blockIndex].Id, _bridge.WrapWidth);
+    private ICaretMap GetMap(int blockIndex) => _host.GetCaretMap(blockIndex);
 
     private TextPosition PositionOfBlockRel(int blockIndex, int rel)
         => _buffer.GetPosition(BlockStartOffset(blockIndex) + rel);

@@ -1,7 +1,6 @@
 using Cursorial.Rendering;
 using Cursorial.UI.Testing;
 
-using CursorialEdit.App;
 using CursorialEdit.Document.Buffer;
 using CursorialEdit.Document.Editing;
 using CursorialEdit.Document.Model;
@@ -12,17 +11,23 @@ using CursorialEdit.Views;
 namespace CursorialEdit.Tests.Pipeline;
 
 /// <summary>
-/// M1.WP7 — the end-to-end gate: a plain-text document rendered through the REAL pipeline
-/// (<c>DocumentBuffer → EditController → PlainTextBlockProducer → BlockViewBridge →
+/// M1.WP7 — the plain-text end-to-end gate, exercised through the REAL M1 pipeline
+/// (<c>DocumentBuffer → EditController → PlainTextBlockProducer → BlockViewBridge → EditorControl →
 /// DocumentPanel → PlainTextPresenter</c>) under <c>UITestHost</c>. Asserts cell-level rendering
 /// (wrapped lines, CJK/emoji rows), the raster economics the milestone is gated on (a keystroke
 /// re-rasters EXACTLY one block; in-band scroll re-rasters zero), presenter reuse with
 /// <see cref="BlockId"/> stability across splits/merges, and the width-change re-measure path.
 /// </summary>
+/// <remarks>
+/// WP7b swapped the <b>application</b> onto the Markdig pipeline + the presenter suite (see
+/// <c>MarkdownRenderTests</c>), but the M1 plain pipeline stays in the tree and keeps its
+/// reconciliation contract — this suite now constructs it directly (as <c>EditingHarness</c> does)
+/// rather than through <see cref="EditorShell"/>, which now formats markdown.
+/// </remarks>
 public sealed class PipelineRenderTests
 {
     private const int Columns = 28;
-    private const int Rows = 11; // status line takes the bottom row → 10 editor rows
+    private const int Rows = 11;
 
     /// <summary>
     /// First paragraph (1 row) · wrap fixture (2 rows at width 28) · CJK (1 row) · emoji (1 row),
@@ -34,18 +39,26 @@ public sealed class PipelineRenderTests
     /// <summary>Both §5.1 wire presets — the shared registry (<see cref="TestSupport.CapabilityPresets"/>).</summary>
     public static TheoryData<string> Presets => TestSupport.CapabilityPresets.Both;
 
-    private sealed class Harness(UITestHost host, EditorShell shell) : IDisposable
+    private sealed class Harness(
+        UITestHost host, EditorControl editor, DocumentBuffer buffer,
+        EditController controller, PlainTextBlockProducer producer, BlockViewBridge bridge) : IDisposable
     {
         public UITestHost Host { get; } = host;
 
-        public EditorShell Shell { get; } = shell;
+        public EditorControl Editor { get; } = editor;
 
-        public void Deconstruct(out UITestHost host, out EditorShell shell) => (host, shell) = (Host, Shell);
+        public DocumentBuffer Buffer { get; } = buffer;
+
+        public EditController Controller { get; } = controller;
+
+        public PlainTextBlockProducer Producer { get; } = producer;
+
+        public BlockViewBridge Bridge { get; } = bridge;
 
         public void Dispose() => Host.Dispose();
     }
 
-    private static Harness CreateShell(
+    private static Harness CreatePipeline(
         string document, string preset = nameof(TestCapabilities.KittyTruecolor), int columns = Columns, int rows = Rows)
     {
         var host = UITestHost.Create(new UITestHostOptions
@@ -54,24 +67,28 @@ public sealed class PipelineRenderTests
             Capabilities = TestSupport.CapabilityPresets.Resolve(preset),
         });
 
-        var shell = new EditorShell();
-        shell.WireDocument(document, host.Time);
+        var buffer = new DocumentBuffer(document);
+        var controller = new EditController(buffer, host.Time);
+        var producer = new PlainTextBlockProducer(controller);
+        var bridge = new BlockViewBridge(buffer, producer);
+        var editor = new EditorControl();
+        editor.AttachDocument(controller, bridge);
 
-        host.ShowRoot(shell);
+        host.ShowRoot(editor);
         Assert.True(host.RunUntilIdle(), "the initial layout/render did not settle");
-        return new Harness(host, shell);
+        return new Harness(host, editor, buffer, controller, producer, bridge);
     }
 
     private static CaretState Caret(TextPosition position) => new(position);
 
-    private static void Type(EditorShell shell, int line, int col, string removed, string inserted)
+    private static void Type(EditController controller, int line, int col, string removed, string inserted)
     {
         var start = new TextPosition(line, col);
-        shell.Controller!.Apply(new Edit(start, removed, inserted), EditKind.Typing, Caret(start), Caret(start));
+        controller.Apply(new Edit(start, removed, inserted), EditKind.Typing, Caret(start), Caret(start));
     }
 
-    private static IReadOnlyDictionary<int, PlainTextPresenter> Realized(EditorShell shell)
-        => shell.Editor.DocumentPanelPart!.RealizedBlocks.ToDictionary(kv => kv.Key, kv => (PlainTextPresenter)kv.Value);
+    private static IReadOnlyDictionary<int, PlainTextPresenter> Realized(EditorControl editor)
+        => editor.DocumentPanelPart!.RealizedBlocks.ToDictionary(kv => kv.Key, kv => (PlainTextPresenter)kv.Value);
 
     // ───────────────────────────── rendering through the real pipeline ─────────────────────────────
 
@@ -79,8 +96,8 @@ public sealed class PipelineRenderTests
     [MemberData(nameof(Presets))]
     public void MultiParagraphDocument_RendersWrappedCjkAndEmojiRows(string preset)
     {
-        using var harness = CreateShell(MultiParagraphDoc, preset);
-        var (host, shell) = harness;
+        using var harness = CreatePipeline(MultiParagraphDoc, preset);
+        var host = harness.Host;
 
         Assert.Equal("First paragraph.", host.GetRowText(0).TrimEnd());
         Assert.Equal("", host.GetRowText(1).TrimEnd());
@@ -92,27 +109,12 @@ public sealed class PipelineRenderTests
         Assert.Equal("👍👍 ok", host.GetRowText(7).TrimEnd());                 // emoji clusters
 
         // The published extent is the wrap-row prefix total — heights are live, not line counts.
-        Assert.Equal(8, shell.Editor.ScrollViewerPart!.Extent.Rows);
+        Assert.Equal(8, harness.Editor.ScrollViewerPart!.Extent.Rows);
 
         // One presenter per block, each its own render boundary (Decision 7).
-        var realized = Realized(shell);
+        var realized = Realized(harness.Editor);
         Assert.Equal(4, realized.Count);
         Assert.All(realized.Values, presenter => Assert.True(presenter.IsRenderBoundary));
-    }
-
-    [Fact]
-    public void WireDocument_ExposesPipeline_AndKeepsCliPathUnconsumed()
-    {
-        using var harness = CreateShell(MultiParagraphDoc);
-        var (_, shell) = harness;
-
-        Assert.NotNull(shell.Document);
-        Assert.NotNull(shell.Controller);
-        Assert.Same(shell.Document, shell.Controller!.Buffer);
-        Assert.NotNull(shell.BlockProducer);
-        Assert.Same(shell.ViewBridge, shell.Editor.HeightSource);
-        Assert.Equal(MultiParagraphDoc, shell.Document!.GetText());
-        Assert.Null(shell.StartupOptions.FilePath); // WP11 consumes the CLI path; WP7 must not
     }
 
     // ───────────────────────────── raster economics (the done-when) ─────────────────────────────
@@ -121,19 +123,19 @@ public sealed class PipelineRenderTests
     [MemberData(nameof(Presets))]
     public void Keystroke_ReRastersExactlyOneBlock_SiblingPresentersReused(string preset)
     {
-        using var harness = CreateShell(MultiParagraphDoc, preset);
-        var (host, shell) = harness;
+        using var harness = CreatePipeline(MultiParagraphDoc, preset);
+        var host = harness.Host;
 
-        var before = Realized(shell);
+        var before = Realized(harness.Editor);
         var countsBefore = before.ToDictionary(kv => kv.Key, kv => kv.Value.RenderCount);
         var idsBefore = before.ToDictionary(kv => kv.Key, kv => kv.Value.Block);
 
-        Type(shell, line: 0, col: 16, removed: "", inserted: "!"); // same-height edit inside block 0
+        Type(harness.Controller, line: 0, col: 16, removed: "", inserted: "!"); // same-height edit inside block 0
         Assert.True(host.RunUntilIdle());
 
         Assert.Equal("First paragraph.!", host.GetRowText(0).TrimEnd());
 
-        var after = Realized(shell);
+        var after = Realized(harness.Editor);
         Assert.Equal(before.Keys.Order(), after.Keys.Order());
         foreach (var (index, presenter) in after)
         {
@@ -148,16 +150,16 @@ public sealed class PipelineRenderTests
     [Fact]
     public void InBandScroll_StillReRastersNothing_ThroughTheRealPipeline()
     {
-        // 30 one-line paragraphs (2 rows each incl. the trailing blank) — extent 60 ≫ viewport 10.
+        // 30 one-line paragraphs (2 rows each incl. the trailing blank) — extent 59 ≫ viewport.
         var document = string.Join("\n\n", Enumerable.Range(0, 30).Select(i => $"Paragraph {i:D2}"));
-        using var harness = CreateShell(document);
-        var (host, shell) = harness;
+        using var harness = CreatePipeline(document);
+        var host = harness.Host;
 
-        var scrollViewer = shell.Editor.ScrollViewerPart!;
+        var scrollViewer = harness.Editor.ScrollViewerPart!;
         Assert.Equal(59, scrollViewer.Extent.Rows); // 29×2 + the unterminated last paragraph's 1
 
-        var panel = shell.Editor.DocumentPanelPart!;
-        var before = Realized(shell);
+        var panel = harness.Editor.DocumentPanelPart!;
+        var before = Realized(harness.Editor);
         var countsBefore = before.ToDictionary(kv => kv.Key, kv => kv.Value.RenderCount);
         var realizedBefore = panel.TotalRealizedBlocks;
 
@@ -167,11 +169,10 @@ public sealed class PipelineRenderTests
 
         // Doc row r+3 lands on viewport row r: paragraph i sits at doc row 2i, so viewport row 1
         // (doc row 4) shows "Paragraph 02" and viewport row 0 (doc row 3) is a blank separator.
-        // (Slice to the content columns — the tall document shows a scrollbar in the last column.)
         Assert.Equal("", host.GetRowText(0)[..20].TrimEnd());
         Assert.Equal("Paragraph 02", host.GetRowText(1)[..20].TrimEnd());
         Assert.Equal(realizedBefore, panel.TotalRealizedBlocks);    // no realization churn
-        foreach (var (index, presenter) in Realized(shell))
+        foreach (var (index, presenter) in Realized(harness.Editor))
             Assert.Equal(countsBefore[index], presenter.RenderCount); // zero block re-raster
     }
 
@@ -181,18 +182,17 @@ public sealed class PipelineRenderTests
     [MemberData(nameof(Presets))]
     public void ParagraphSplit_AddsBlock_ReusesShiftedSiblings(string preset)
     {
-        using var harness = CreateShell("alpha\n\nbravo\n\ncharlie", preset);
-        var (host, shell) = harness;
+        using var harness = CreatePipeline("alpha\n\nbravo\n\ncharlie", preset);
+        var host = harness.Host;
 
-        var blocks = shell.BlockProducer!.Blocks;
-        var ids = blocks.Select(b => b.Id).ToArray();
-        var before = Realized(shell);
+        var ids = harness.Producer.Blocks.Select(b => b.Id).ToArray();
+        var before = Realized(harness.Editor);
         Assert.Equal(3, before.Count);
 
         BlockListChange? change = null;
-        shell.BlockProducer.Changed += c => change = c;
+        harness.Producer.Changed += c => change = c;
 
-        Type(shell, line: 2, col: 3, removed: "", inserted: "\n\n"); // "bra" ¶ "vo" — a real paragraph split
+        Type(harness.Controller, line: 2, col: 3, removed: "", inserted: "\n\n"); // "bra" ¶ "vo" — a real paragraph split
         Assert.True(host.RunUntilIdle());
 
         // The reconciliation contract: split → Added + Reused with shift (+ the split block Changed).
@@ -204,7 +204,7 @@ public sealed class PipelineRenderTests
         Assert.Equal(2, change.LineShift);
 
         // Sibling presenters were REUSED across the index shift (charlie: index 2 → 3), ids stable.
-        var after = Realized(shell);
+        var after = Realized(harness.Editor);
         Assert.Equal(4, after.Count);
         Assert.Same(before[0], after[0]);
         Assert.Same(before[1], after[1]);
@@ -222,18 +222,18 @@ public sealed class PipelineRenderTests
     [MemberData(nameof(Presets))]
     public void ParagraphMerge_RemovesSwallowedBlock_TearsDownItsPresenter(string preset)
     {
-        using var harness = CreateShell("alpha\n\nbravo\n\ncharlie", preset);
-        var (host, shell) = harness;
+        using var harness = CreatePipeline("alpha\n\nbravo\n\ncharlie", preset);
+        var host = harness.Host;
 
-        var ids = shell.BlockProducer!.Blocks.Select(b => b.Id).ToArray();
-        var panel = shell.Editor.DocumentPanelPart!;
-        var before = Realized(shell);
+        var ids = harness.Producer.Blocks.Select(b => b.Id).ToArray();
+        var panel = harness.Editor.DocumentPanelPart!;
+        var before = Realized(harness.Editor);
         var derealizedBefore = panel.TotalDerealizedBlocks;
 
         BlockListChange? change = null;
-        shell.BlockProducer.Changed += c => change = c;
+        harness.Producer.Changed += c => change = c;
 
-        Type(shell, line: 1, col: 0, removed: "\n", inserted: ""); // delete the separator: alpha+bravo merge
+        Type(harness.Controller, line: 1, col: 0, removed: "\n", inserted: ""); // delete the separator: alpha+bravo merge
         Assert.True(host.RunUntilIdle());
 
         Assert.NotNull(change);
@@ -245,9 +245,9 @@ public sealed class PipelineRenderTests
 
         // The swallowed block's presenter is gone (torn down + deregistered); survivors reused.
         Assert.Equal(derealizedBefore + 1, panel.TotalDerealizedBlocks);
-        Assert.Null(shell.ViewBridge!.GetPresenter(ids[1]));
+        Assert.Null(harness.Bridge.GetPresenter(ids[1]));
 
-        var after = Realized(shell);
+        var after = Realized(harness.Editor);
         Assert.Equal(2, after.Count);
         Assert.Same(before[0], after[0]);
         Assert.Same(before[2], after[1]);
@@ -264,15 +264,15 @@ public sealed class PipelineRenderTests
     [MemberData(nameof(Presets))]
     public void WidthChange_ReWrapsAndReMeasures_ExtentFollows(string preset)
     {
-        using var harness = CreateShell(MultiParagraphDoc, preset);
-        var (host, shell) = harness;
-        Assert.Equal(8, shell.Editor.ScrollViewerPart!.Extent.Rows); // wrap fixture spans 2 rows at 28
+        using var harness = CreatePipeline(MultiParagraphDoc, preset);
+        var host = harness.Host;
+        Assert.Equal(8, harness.Editor.ScrollViewerPart!.Extent.Rows); // wrap fixture spans 2 rows at 28
 
         host.SendResize(60, Rows);
         Assert.True(host.RunUntilIdle());
 
         // The wrap fixture (33 cells) fits one row at width 60 — heights are live wrap-row counts.
-        Assert.Equal(7, shell.Editor.ScrollViewerPart.Extent.Rows);
+        Assert.Equal(7, harness.Editor.ScrollViewerPart.Extent.Rows);
         Assert.Equal("First paragraph.", host.GetRowText(0).TrimEnd());
         Assert.Equal(NavigationFixtures.Wrap28Fixture, host.GetRowText(2).TrimEnd());
         Assert.Equal("汉字汉字 wide", host.GetRowText(4).TrimEnd());
@@ -281,7 +281,7 @@ public sealed class PipelineRenderTests
         host.SendResize(Columns, Rows);
         Assert.True(host.RunUntilIdle());
 
-        Assert.Equal(8, shell.Editor.ScrollViewerPart.Extent.Rows); // narrow again → re-wrapped
+        Assert.Equal(8, harness.Editor.ScrollViewerPart.Extent.Rows); // narrow again → re-wrapped
         Assert.Equal("aaaaaaaaaa", host.GetRowText(2).TrimEnd());
         Assert.Equal("bbbbbbbbbbbbbbbbbbbbbb", host.GetRowText(3).TrimEnd());
     }
@@ -293,10 +293,10 @@ public sealed class PipelineRenderTests
         // rebuild their maps; unrealized blocks serve estimates that refine as they realize.
         const int paragraphCount = 400;
         var document = string.Join("\n\n", Enumerable.Range(0, paragraphCount).Select(_ => NavigationFixtures.Wrap28Fixture));
-        using var harness = CreateShell(document, columns: 60, rows: Rows);
-        var (host, shell) = harness;
+        using var harness = CreatePipeline(document, columns: 60, rows: Rows);
+        var host = harness.Host;
 
-        var bridge = shell.ViewBridge!;
+        var bridge = harness.Bridge;
         int buildsBefore = bridge.MapBuildCount;
 
         foreach (var width in new[] { 50, 40, 28, 24, 60 })
@@ -318,7 +318,7 @@ public sealed class PipelineRenderTests
         // width, a bounded estimate for blocks not realized since the storm (§2.3). The exact
         // total is 399 two-row blocks + the last one-row one.
         const int exactRows = 2 * (paragraphCount - 1) + 1;
-        var scrollViewer = shell.Editor.ScrollViewerPart!;
+        var scrollViewer = harness.Editor.ScrollViewerPart!;
         scrollViewer.VerticalOffset = int.MaxValue; // coerced to extent − viewport
         Assert.True(host.RunUntilIdle());
 
@@ -339,25 +339,26 @@ public sealed class PipelineRenderTests
         Assert.Equal(exactRows, scrollViewer.Extent.Rows);
     }
 
-    // ───────────────────────────── re-wiring (the WP11 open-file seam) ─────────────────────────────
+    // ───────────────────────────── re-wiring (the open-file seam) ─────────────────────────────
 
     [Fact]
-    public void WireDocument_Again_ReplacesThePipelineAndTheSurface()
+    public void AttachDocument_Again_ReplacesThePipelineAndTheSurface()
     {
-        using var harness = CreateShell("old content");
-        var (host, shell) = harness;
-        var oldPresenters = Realized(shell).Values.ToList();
-        var oldProducer = shell.BlockProducer!;
+        using var harness = CreatePipeline("old content");
+        var host = harness.Host;
+        var oldPresenters = Realized(harness.Editor).Values.ToList();
 
-        shell.WireDocument("new one\n\nnew two", host.Time);
+        var buffer = new DocumentBuffer("new one\n\nnew two");
+        var controller = new EditController(buffer, host.Time);
+        var producer = new PlainTextBlockProducer(controller);
+        var bridge = new BlockViewBridge(buffer, producer);
+        harness.Editor.AttachDocument(controller, bridge);
         Assert.True(host.RunUntilIdle());
 
         Assert.Equal("new one", host.GetRowText(0).TrimEnd());
         Assert.Equal("new two", host.GetRowText(2).TrimEnd());
 
-        // The old pipeline is inert: its presenters were de-realized by the factory swap and its
-        // producer detached from the (old) controller.
-        Assert.DoesNotContain(Realized(shell).Values, oldPresenters.Contains);
-        Assert.NotSame(oldProducer, shell.BlockProducer);
+        // The old presenters were de-realized by the factory swap.
+        Assert.DoesNotContain(Realized(harness.Editor).Values, oldPresenters.Contains);
     }
 }

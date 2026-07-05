@@ -102,7 +102,7 @@ public class EditorControl : Control, IContentRowMap
     // ── WP8 document wiring (null until AttachDocument) ──
     private DocumentCaret? _caret;
     private EditController? _controller;
-    private BlockViewBridge? _bridge;
+    private IEditorViewSource? _bridge;
     private bool _dragging;
     private bool _publishing; // re-entrancy guard: publishing may refine heights, which re-publishes
 
@@ -194,9 +194,9 @@ public class EditorControl : Control, IContentRowMap
     /// never attached behaves exactly as before WP8.
     /// </remarks>
     /// <param name="controller">The document's single mutation funnel (undo, coalescing, caret-echo contract).</param>
-    /// <param name="bridge">The pipeline↔surface bridge serving heights, run maps, and presenters over the same document.</param>
+    /// <param name="bridge">The pipeline↔surface bridge serving heights, run maps, and presenters over the same document — the plain-text <see cref="BlockViewBridge"/> or the markdown <see cref="MarkdownViewBridge"/>.</param>
     /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
-    public void AttachDocument(EditController controller, BlockViewBridge bridge)
+    public void AttachDocument(EditController controller, IEditorViewSource bridge)
     {
         ArgumentNullException.ThrowIfNull(controller);
         ArgumentNullException.ThrowIfNull(bridge);
@@ -708,6 +708,10 @@ public class EditorControl : Control, IContentRowMap
     {
         if (_caret is { } caret)
         {
+            // Refresh reveal before publishing (focus gained, attach, height refine — none of which
+            // routed through the caret's own move path). No-op on the plain surface.
+            _bridge?.OnCaretPositioned(caret.Position);
+
             _publishing = true;
             try
             {

@@ -24,7 +24,7 @@ namespace CursorialEdit.Layout;
 /// and pins to the grapheme-cluster boundary at or before it — the WP8 caret's landing rule.
 /// </para>
 /// </remarks>
-public sealed class BlockRunMap
+public sealed class BlockRunMap : ICaretMap
 {
     /// <summary>One visual row: which line it renders, the wrapped segment, and its block-relative span.</summary>
     private readonly record struct RowEntry(int Line, int SegStart, int SegLength, int SrcStart, int Width);
@@ -185,6 +185,42 @@ public sealed class BlockRunMap
 
         int line = _rows[row].Line;
         return _lineSrcStart[line] + _wrapped[line].ColAt(row - _lineFirstRow[line], cell);
+    }
+
+    /// <summary>
+    /// The block-relative source offset at the content end of visual <paramref name="row"/> — the row's
+    /// single <see cref="RunKind.Text"/> run end (<see cref="ICaretMap.RowEndOffset"/> / the End-key landing).
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="row"/> is out of range.</exception>
+    public int RowEndOffset(int row)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(row);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(row, _rows.Length);
+
+        var entry = _rows[row];
+        return entry.SrcStart + entry.SegLength;
+    }
+
+    /// <summary>
+    /// The block-relative source offset nearest to (<paramref name="row"/>, <paramref name="cell"/>):
+    /// the cluster boundary bracketing the cell, rounded to the closer side (ties toward the earlier
+    /// boundary) — the mouse hit-test rule (<c>TextBox.IndexFromPointer</c>'s display-space rounding).
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="row"/> is out of range.</exception>
+    public int NearestOffset(int row, int cell)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(row);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(row, _rows.Length);
+
+        var text = RowText(row);
+        int before = CaretNavigator.ColAtOrBeforeCell(text, cell);
+        int after = CaretNavigator.NextCluster(text, before);
+        int chosen = after == before
+            || cell - CaretNavigator.CellOfCol(text, before) <= CaretNavigator.CellOfCol(text, after) - cell
+            ? before
+            : after;
+
+        return _rows[row].SrcStart + chosen;
     }
 
     /// <summary>The line owning <paramref name="srcOffset"/> — the largest <c>i</c> with <c>_lineSrcStart[i] ≤ srcOffset</c>.</summary>

@@ -23,7 +23,7 @@ namespace CursorialEdit.Views;
 /// Identities travel as raw <see cref="long"/>s so the panel stays document-model-agnostic
 /// (they are <c>BlockId.Value</c>s on the pipeline side).
 /// </remarks>
-internal interface IBlockViewSource : IBlockHeightSource
+public interface IBlockViewSource : IBlockHeightSource
 {
     /// <summary>The stable identity of the block currently at <paramref name="index"/>.</summary>
     long GetBlockIdentity(int index);

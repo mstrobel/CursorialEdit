@@ -38,7 +38,7 @@ namespace CursorialEdit.Layout;
 /// less/vim continuation indicators. The document itself never scrolls horizontally.
 /// </para>
 /// </remarks>
-public sealed class RunMap
+public sealed class RunMap : ICaretMap
 {
     // ── per visual row ──
     private readonly Run[][] _rowRuns;         // runs in cell order (includes zero-width hidden marks)
@@ -235,6 +235,24 @@ public sealed class RunMap
 
         return new ClippedRow(slideOffset, viewport, leftClipped, rightClipped, cells);
     }
+
+    /// <summary>
+    /// The block-relative source offset at the content end of visual <paramref name="row"/> (after its
+    /// last visible cluster) — the End-key landing (<see cref="ICaretMap.RowEndOffset"/>). On the
+    /// revealed active line this is the un-wrapped line end; on an inactive wrapped row it is the wrap
+    /// boundary.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="row"/> is out of range.</exception>
+    public int RowEndOffset(int row) => OffsetAt(row, RowWidth(row));
+
+    /// <summary>
+    /// The block-relative source offset at (<paramref name="row"/>, <paramref name="cell"/>) rounded to
+    /// the cluster boundary at or before the cell — the mouse hit-test landing
+    /// (<see cref="ICaretMap.NearestOffset"/>). Formatting hides marks, so a click maps through the
+    /// display→source table like every other cell query.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="row"/> is out of range.</exception>
+    public int NearestOffset(int row, int cell) => OffsetAt(row, cell);
 
     /// <summary>The line owning <paramref name="srcOffset"/> — the largest <c>i</c> with <c>_lineSrcStart[i] ≤ srcOffset</c> (last on ties: a trailing empty line owns its start).</summary>
     private int LineOfSrcOffset(int srcOffset)
