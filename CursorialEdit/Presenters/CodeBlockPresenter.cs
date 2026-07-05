@@ -88,8 +88,17 @@ public sealed class CodeBlockPresenter : LeafBlockPresenter
         {
             // The opening fence carries a dim language label; a closing fence is blank fill. Both hide
             // their `````/`~~~` source until the line is active (then the base reveal path shows it).
+            int labelWidth = 0;
             if (line == 0 && !string.IsNullOrWhiteSpace(_fenceInfo))
-                DrawSelectableText(context, 0, row, _fenceInfo!.Trim(), MarkdownStyles.CodeLabelBrush(this), MarkdownStyles.CodeFillBrush(this), MarkdownStyles.Dim(this), selection);
+            {
+                var label = _fenceInfo!.Trim();
+                DrawSelectableText(context, 0, row, label, MarkdownStyles.CodeLabelBrush(this), MarkdownStyles.CodeFillBrush(this), MarkdownStyles.Dim(this), selection);
+                labelWidth = Cursorial.Text.GraphemeWidth.StringWidth(label);
+            }
+
+            // The rest of a selected fence row is glyph-free code fill — compose the selection onto it so a
+            // selected code block highlights its fence rows uniformly, not just the body (WP11b review fix).
+            FillSelectedBlank(context, row, labelWidth, foreground, selection);
             return;
         }
 

@@ -139,3 +139,14 @@ deleted. Kept here as a record.
   to resolve the capability ladder against. Deferred — it resolves to the same Unicode floor "↵" today,
   so nothing is lost; wiring it needs a glyph-resolution seam threaded into the layout builder (or a
   post-layout glyph substitution), which is a larger change to reviewed code.
+
+## WP11b review — deferred cleanup
+
+- **The verbatim selection path duplicates the map-based one.** `SelectedCellsForVerbatimLine` +
+  `SlideSelection` + `LineSourceStart` compute a line's selected cell interval from `Lines[i].Text`
+  directly, while the run-map path (`SelectedCells`) does the same via `map.Locate`. The verbatim
+  presenters (Raw/FrontMatter/Fallback) all have a run map available, so they could route through the
+  single map-based path instead of the parallel verbatim one. Low-value DRY (both are correct + tested);
+  unify if the two ever drift. (Review finding 5, PLAUSIBLE.)
+  (Finding 4 — DrawSelectableText enumerating clusters for a fully-unselected run — is minor and left as-is:
+  the early `!_selectionActive || selection.IsEmpty` guard already covers the common no-selection frame.)

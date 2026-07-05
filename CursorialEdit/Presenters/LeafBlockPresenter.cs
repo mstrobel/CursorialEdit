@@ -55,6 +55,7 @@ public abstract class LeafBlockPresenter : UIElement
     private IReadOnlyList<Line> _lines;
     private IReadOnlyList<InlineRun> _inlineRuns;
     private string? _blockText;
+    private int[]? _lineStarts; // cached block-relative start offset of each source line (prefix sums)
 
     private int? _activeLine;
     private int _slideOffset;
@@ -222,6 +223,7 @@ public abstract class LeafBlockPresenter : UIElement
         _inlineRuns = inlineRuns;
         _headingLevel = headingLevel;
         _blockText = null;
+        _lineStarts = null;
         _activeMap = null;
         _activeWidth = -1;
         _inactiveMap = null;
@@ -426,15 +428,21 @@ public abstract class LeafBlockPresenter : UIElement
                     break;
 
                 case ClipCellKind.LeftIndicator:
-                    context.DrawText(column, drawAtRow, LeftIndicatorGlyph, foreground, null, MarkdownStyles.Dim(this));
+                    // The ❮/❯ continuation indicators carry a glyph, so compose the selection into them
+                    // (a selected clip edge stays a contiguous highlight, no one-cell gap).
+                    DrawSelectableText(context, column, drawAtRow, LeftIndicatorGlyph, foreground, null, MarkdownStyles.Dim(this), selection);
                     break;
 
                 case ClipCellKind.RightIndicator:
-                    context.DrawText(column, drawAtRow, RightIndicatorGlyph, foreground, null, MarkdownStyles.Dim(this));
+                    DrawSelectableText(context, column, drawAtRow, RightIndicatorGlyph, foreground, null, MarkdownStyles.Dim(this), selection);
+                    break;
+
+                case ClipCellKind.Blank:  // padding, or a straddling wide cluster's suppressed half — no glyph
+                    if (_selectionActive && column >= selection.FromCell && column < selection.ToCell)
+                        DrawSelectedSpan(context, column, drawAtRow, " ", foreground, default);
                     break;
 
                 case ClipCellKind.Tail:   // covered by the preceding wide Head glyph
-                case ClipCellKind.Blank:  // padding, or a straddling wide cluster's suppressed half
                 default:
                     break;
             }
@@ -543,10 +551,17 @@ public abstract class LeafBlockPresenter : UIElement
     /// <summary>The block-relative source offset where source line <paramref name="lineIndex"/> begins (terminators included).</summary>
     private int LineSourceStart(int lineIndex)
     {
-        int start = 0;
-        for (var i = 0; i < lineIndex; i++)
-            start += _lines[i].TotalLength;
-        return start;
+        // Cached prefix sums (invalidated in SetContent): one pass per content, not a re-walk per call —
+        // so selection over a tall verbatim block is O(rows), not O(rows²), per frame.
+        if (_lineStarts is not { } starts)
+        {
+            starts = new int[_lines.Count + 1];
+            for (var i = 0; i < _lines.Count; i++)
+                starts[i + 1] = starts[i] + _lines[i].TotalLength;
+            _lineStarts = starts;
+        }
+
+        return starts[lineIndex];
     }
 
     /// <summary>
@@ -637,6 +652,26 @@ public abstract class LeafBlockPresenter : UIElement
             context.DrawText(col, row, text, foreground, null, style.AddAttributes(TextAttributes.Inverse));
         else
             context.DrawText(col, row, text, foreground, _selectionBrush, style); // fill replaces any run background — no hole
+    }
+
+    /// <summary>
+    /// Composes the selection onto <b>glyph-free</b> cells in <c>[fromCell, selection.ToCell)</c> — the
+    /// cells no <see cref="DrawSelectableText"/> covers (a blank/closing code fence row, the freed padding of
+    /// a slid active row): there is no glyph to compose into, so the selection is drawn as spaces carrying its
+    /// own fill (or Inverse on NoColor). Restores the uniform highlight the old full-width scrim gave those
+    /// cells, without reintroducing the hole (a glyph cell still composes through <see cref="DrawSelectableText"/>).
+    /// </summary>
+    protected void FillSelectedBlank(RenderContext context, int row, int fromCell, IBrush foreground, RowSelection selection)
+    {
+        if (!_selectionActive || selection.IsEmpty)
+            return;
+
+        int from = Math.Max(fromCell, selection.FromCell);
+        int to = selection.ToCell;
+        if (to <= from)
+            return;
+
+        DrawSelectedSpan(context, from, row, new string(' ', to - from), foreground, default);
     }
 
     /// <summary>

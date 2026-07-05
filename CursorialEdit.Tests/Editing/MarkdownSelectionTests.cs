@@ -121,6 +121,24 @@ public sealed class MarkdownSelectionTests
         Assert.NotEqual(b0, control.BackgroundAt(0, 1));     // the highlight replaced the code fill — no hole
     }
 
+    [Fact]
+    public void SelectionOverACodeBlock_HighlightsTheFenceRowsToo_NotJustTheBody()
+    {
+        // WP11b review fix: a fence row is glyph-free code fill (blank close fence / info-less open fence),
+        // and the compose-into-draw path used to early-return on it — so a selected code block showed
+        // unhighlighted top/bottom edges. The fence rows must now carry the selection like the body.
+        using var harness = MarkdownEditingHarness.Create("```\nx=1\n```\ntail");
+        for (var i = 0; i < 3; i++)
+            harness.Key(Key.DownArrow, KeyModifiers.Shift); // select the whole block (caret to "tail")
+
+        // Rows: 0 = open ``` , 1 = body "x=1", 2 = close ``` . The fence cell (col 0) of each must read
+        // selected — the SAME background as the body cell — not the plain code fill.
+        var body = harness.BackgroundAt(0, 1);
+        Assert.Equal(body, harness.BackgroundAt(0, 0)); // open fence row highlighted
+        Assert.Equal(body, harness.BackgroundAt(0, 2)); // close fence row highlighted
+        Assert.NotEqual(body, harness.BackgroundAt(0, 3)); // ≠ the unselected 'tail'
+    }
+
     // ───────────────────────────── WP11b: NoColor selection via Inverse ─────────────────────────────
 
     [Fact]
