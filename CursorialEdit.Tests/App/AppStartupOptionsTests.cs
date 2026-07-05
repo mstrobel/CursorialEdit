@@ -159,4 +159,108 @@ public sealed class AppStartupOptionsTests
         Assert.Contains("--version", AppStartupOptions.UsageText);
         Assert.Contains("--", AppStartupOptions.UsageText);
     }
+
+    // ---- Diagnostic journal/replay flags -----------------------------------------------------
+
+    [Fact]
+    public void Parse_JournalFlag_NoPath_RequestsDefaultJournal()
+    {
+        Assert.True(AppStartupOptions.TryParse(["--journal"], out var options, out var error));
+        Assert.True(options!.JournalRequested);
+        Assert.Null(options.JournalPath); // Program derives + prints the default
+        Assert.Null(options.FilePath);
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void Parse_JournalFlag_WithInlinePath_IsCaptured()
+    {
+        Assert.True(AppStartupOptions.TryParse(["--journal=/tmp/session.jsonl"], out var options, out _));
+        Assert.True(options!.JournalRequested);
+        Assert.Equal("/tmp/session.jsonl", options.JournalPath);
+    }
+
+    [Fact]
+    public void Parse_JournalFlag_SpaceSeparatedPath_ThenFile()
+    {
+        // The documented sanity form: `--journal PATH FILE` — PATH is consumed, FILE follows.
+        Assert.True(AppStartupOptions.TryParse(["--journal", "/tmp/j.jsonl", "notes.md"], out var options, out _));
+        Assert.True(options!.JournalRequested);
+        Assert.Equal("/tmp/j.jsonl", options.JournalPath);
+        Assert.Equal("notes.md", options.FilePath);
+    }
+
+    [Fact]
+    public void Parse_JournalFlag_SpaceSeparatedPath_NoFile()
+    {
+        Assert.True(AppStartupOptions.TryParse(["--journal", "/tmp/j.jsonl"], out var options, out _));
+        Assert.True(options!.JournalRequested);
+        Assert.Equal("/tmp/j.jsonl", options.JournalPath);
+        Assert.Null(options.FilePath);
+    }
+
+    [Fact]
+    public void Parse_JournalFlag_BareBeforeAnotherFlag_UsesDefault()
+    {
+        // A following flag is not swallowed as the journal path — bare --journal keeps the default.
+        Assert.True(AppStartupOptions.TryParse(["--journal", "--version"], out var options, out _));
+        Assert.True(options!.ShowVersion);
+    }
+
+    [Fact]
+    public void Parse_JournalEmptyValue_IsUsageError()
+    {
+        Assert.False(AppStartupOptions.TryParse(["--journal="], out var options, out var error));
+        Assert.Null(options);
+        Assert.Contains("--journal", error);
+    }
+
+    [Fact]
+    public void Parse_ReplayFlag_SpaceSeparatedValue_IsCaptured()
+    {
+        Assert.True(AppStartupOptions.TryParse(["--replay", "/tmp/session.jsonl"], out var options, out var error));
+        Assert.Equal("/tmp/session.jsonl", options!.ReplayPath);
+        Assert.Null(options.FilePath);
+        Assert.False(options.JournalRequested);
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void Parse_ReplayFlag_InlineValue_IsCaptured()
+    {
+        Assert.True(AppStartupOptions.TryParse(["--replay=/tmp/session.jsonl"], out var options, out _));
+        Assert.Equal("/tmp/session.jsonl", options!.ReplayPath);
+    }
+
+    [Fact]
+    public void Parse_ReplayFlag_MissingValue_IsUsageError()
+    {
+        Assert.False(AppStartupOptions.TryParse(["--replay"], out var options, out var error));
+        Assert.Null(options);
+        Assert.Contains("--replay", error);
+    }
+
+    [Fact]
+    public void Parse_ReplayWithFileArgument_IsUsageError()
+    {
+        // Replay reconstructs the journal's own document; a FILE alongside it is contradictory.
+        Assert.False(AppStartupOptions.TryParse(["--replay", "/tmp/session.jsonl", "notes.md"], out var options, out var error));
+        Assert.Null(options);
+        Assert.Contains("--replay", error);
+    }
+
+    [Fact]
+    public void Parse_ReplayWithJournal_IsUsageError()
+    {
+        Assert.False(AppStartupOptions.TryParse(["--replay", "/tmp/s.jsonl", "--journal"], out var options, out var error));
+        Assert.Null(options);
+        Assert.Contains("--replay", error);
+    }
+
+    [Fact]
+    public void UsageText_NamesTheJournalAndReplayFlags()
+    {
+        Assert.Contains("--journal", AppStartupOptions.UsageText);
+        Assert.Contains("--replay", AppStartupOptions.UsageText);
+    }
 }
