@@ -2,15 +2,20 @@
 
   <!--
     Build/reference strategy (implementation-plan §2.2):
-    - Default: package mode — the editor projects reference the published Cursorial packages.
-    - `dotnet build -p:UseLocalCursorial=true` (or flip the default below) switches every Cursorial
-      PackageReference in the editor projects to a ProjectReference into the sibling Cursorial repo.
-      This is the ONE sanctioned way to consume in-flight framework changes (FB items). The test
-      project ignores this switch: it is ALWAYS in project mode (plan §2.1 — the verified
-      project-over-package mix; Cursorial.UI.Testing is unpackaged).
+    - Default (since M2.WP11): LOCAL mode — the editor projects reference the sibling Cursorial repo
+      directly. The editor now dogfoods in-flight framework features that are NOT in the published
+      0.3.1 package: FW-A (UserOptions/EmojiAvailable — the config layer), the ThemeContributions tier
+      (M2.WP11 Md.* theme), and Cursorial.UI.Dialogs. Per the maintainer ("building against local is
+      fine for now"), local is the default until those land in a published package.
+    - `dotnet build -p:UseLocalCursorial=false` selects package mode (published Cursorial 0.3.1).
+      NOTE: since M2.WP11 the app no longer BUILDS in package mode — it references FW-A
+      (UserOptions/EmojiAvailable), ThemeContributions, and Cursorial.UI.Dialogs, none of which are in
+      0.3.1. Package mode is retained only as the switch that reconnects once those land in a published
+      package; until then the editor is local-only. The test project ignores this switch: it is ALWAYS
+      in project mode (plan §2.1 — the verified project-over-package mix; Cursorial.UI.Testing is unpackaged).
   -->
   <PropertyGroup>
-    <UseLocalCursorial Condition="'$(UseLocalCursorial)' == ''">false</UseLocalCursorial>
+    <UseLocalCursorial Condition="'$(UseLocalCursorial)' == ''">true</UseLocalCursorial>
     <CursorialRepoRoot>$(MSBuildThisFileDirectory)..\Cursorial\</CursorialRepoRoot>
     <CursorialPackageVersion>0.3.1</CursorialPackageVersion>
   </PropertyGroup>

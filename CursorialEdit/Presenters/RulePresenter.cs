@@ -33,6 +33,6 @@ public sealed class RulePresenter : LeafBlockPresenter
         }
 
         if (rows > 0 && width > 0)
-            context.DrawText(0, 0, new string(RuleGlyph, width), MarkdownStyles.RuleBrush);
+            context.DrawText(0, 0, new string(RuleGlyph, width), MarkdownStyles.RuleBrush(this));
     }
 }

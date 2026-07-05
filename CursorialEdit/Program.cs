@@ -26,7 +26,11 @@ if (args.Length > 0 && args[0] == "--reveal-demo")
     demoApp.Started += (_, _) => demoRestore = SignalRestore.Register();
     try
     {
-        return await demoApp.RunAsync(() => new RevealDemoView(markdown));
+        return await demoApp.RunAsync(() =>
+        {
+            CursorialEdit.Themes.MdTheme.EnsureInstalled(UIApplication.Current); // WP11: Md.* theme for the demo too
+            return new RevealDemoView(markdown);
+        });
     }
     finally
     {
@@ -94,6 +98,7 @@ try
     // status line (EditorShell.OpenStartupDocument's contract).
     return await app.RunAsync(() =>
     {
+        CursorialEdit.Themes.MdTheme.EnsureInstalled(UIApplication.Current); // WP11: install the Md.* theme + FW-A overrides
         var shell = new EditorShell(startupOptions);
         shell.OpenStartupDocument();
         return shell;

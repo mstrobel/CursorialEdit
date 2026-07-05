@@ -20,8 +20,12 @@ namespace CursorialEdit.Presenters;
 /// </summary>
 public sealed class FrontMatterPresenter : LeafBlockPresenter
 {
-    private const char CollapsedChevron = '▸';
-    private const char ExpandedChevron = '▾';
+    // The fold chevrons resolve through the §18.4 glyph-tier seam (Icon's imperative analogue): they
+    // request a glyph by role and inherit the capability ladder. v1 pins no Nerd Font / emoji glyph for
+    // them, so both fall to the Unicode floor (▸/▾) — byte-identical to WP7 — while the seam lets a later
+    // icon-ledger row pin a PUA glyph without touching this presenter.
+    private static string CollapsedChevron => Icons.EditorGlyph.FrontMatterCollapsed.Resolve();
+    private static string ExpandedChevron => Icons.EditorGlyph.FrontMatterExpanded.Resolve();
 
     private bool _expanded;
 
@@ -60,16 +64,16 @@ public sealed class FrontMatterPresenter : LeafBlockPresenter
     {
         if (!_expanded)
         {
-            context.DrawText(0, 0, $"{CollapsedChevron} front matter", MarkdownStyles.FrontMatterBrush, null, MarkdownStyles.Dim);
+            context.DrawText(0, 0, $"{CollapsedChevron} front matter", MarkdownStyles.FrontMatterBrush(this), null, MarkdownStyles.Dim(this));
             return;
         }
 
         for (var row = 0; row < rows && row < Lines.Count; row++)
-            context.DrawText(0, row, Lines[row].Text, MarkdownStyles.FrontMatterBrush, null, MarkdownStyles.Dim);
+            context.DrawText(0, row, Lines[row].Text, MarkdownStyles.FrontMatterBrush(this), null, MarkdownStyles.Dim(this));
 
         // The collapse affordance sits in the top-right corner — but only when it would not overwrite the
         // first line's content (a full-width metadata value keeps its last cell).
         if (rows > 0 && width > 0 && Lines.Count > 0 && GraphemeWidth.StringWidth(Lines[0].Text) <= width - 2)
-            context.DrawText(width - 1, 0, ExpandedChevron.ToString(), MarkdownStyles.FrontMatterBrush, null, MarkdownStyles.Dim);
+            context.DrawText(width - 1, 0, ExpandedChevron, MarkdownStyles.FrontMatterBrush(this), null, MarkdownStyles.Dim(this));
     }
 }

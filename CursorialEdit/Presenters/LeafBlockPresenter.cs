@@ -92,6 +92,32 @@ public abstract class LeafBlockPresenter : UIElement
         _headingLevel = headingLevel;
         _wrapMode = wrapMode;
         IsRenderBoundary = true; // Decision 7 — reveal touches one zone, never a band
+        AssignStyleClasses(); // §18.2 — md-* selector addressability (assigned before the element enters a tree)
+    }
+
+    // The md-* style classes (architecture §2.3 / spec §18.2) that make each construct addressable by the
+    // framework's class-selector mechanism — the same spine caps-* degradation keys off. Assigned in the
+    // constructor (no root yet, so no style re-match churn); the presenters resolve their Md.* tokens by
+    // resource key (the idiomatic path for imperative DrawText presenters), the class naming which token a
+    // presenter consumes (md-h1 → Md.Heading.1).
+    private void AssignStyleClasses()
+    {
+        switch (_kind)
+        {
+            case BlockKind.Heading:
+                Classes.Add(Themes.MdStyleClasses.Heading(_headingLevel ?? 1));
+                break;
+            case BlockKind.FencedCode:
+            case BlockKind.IndentedCode:
+                Classes.Add(Themes.MdStyleClasses.Code);
+                break;
+            case BlockKind.Quote:
+                Classes.Add(Themes.MdStyleClasses.Quote);
+                break;
+            case BlockKind.FrontMatter:
+                Classes.Add(Themes.MdStyleClasses.FrontMatter);
+                break;
+        }
     }
 
     /// <summary>The revealed active source line, or <see langword="null"/> when the block is inactive (all marks hidden).</summary>
@@ -383,11 +409,11 @@ public abstract class LeafBlockPresenter : UIElement
                     break;
 
                 case ClipCellKind.LeftIndicator:
-                    context.DrawText(column, drawAtRow, LeftIndicatorGlyph, foreground, null, MarkdownStyles.Dim);
+                    context.DrawText(column, drawAtRow, LeftIndicatorGlyph, foreground, null, MarkdownStyles.Dim(this));
                     break;
 
                 case ClipCellKind.RightIndicator:
-                    context.DrawText(column, drawAtRow, RightIndicatorGlyph, foreground, null, MarkdownStyles.Dim);
+                    context.DrawText(column, drawAtRow, RightIndicatorGlyph, foreground, null, MarkdownStyles.Dim(this));
                     break;
 
                 case ClipCellKind.Tail:   // covered by the preceding wide Head glyph
@@ -411,7 +437,7 @@ public abstract class LeafBlockPresenter : UIElement
         if (_activeLine is null || width <= 0 || rows <= 0)
             return;
 
-        context.PaintRectangle(new Rect(0, 0, width, rows), MarkdownStyles.ActiveWellBrush);
+        context.PaintRectangle(new Rect(0, 0, width, rows), MarkdownStyles.ActiveWellBrush(this));
     }
 
     /// <summary>
@@ -490,34 +516,34 @@ public abstract class LeafBlockPresenter : UIElement
     protected virtual (IBrush Foreground, IBrush? Background, CellStyle Style) StyleForContent(in Run run, IBrush inherited)
     {
         if (run.Kind == RunKind.RevealedMark)
-            return (inherited, null, MarkdownStyles.Dim);
+            return (inherited, null, MarkdownStyles.Dim(this));
 
         var attributes = MarkdownStyles.AttributesFor(run.Style);
         var foreground = inherited;
 
         if (_kind == BlockKind.Heading)
         {
-            foreground = MarkdownStyles.HeadingBrush(_headingLevel ?? 1);
-            attributes |= MarkdownStyles.HeadingAttributes(_headingLevel ?? 1);
+            foreground = MarkdownStyles.HeadingBrush(this, _headingLevel ?? 1);
+            attributes |= MarkdownStyles.HeadingAttributes(this, _headingLevel ?? 1);
         }
 
-        var background = (run.Style & RunStyle.Code) != 0 ? MarkdownStyles.CodeFillBrush : null;
+        var background = (run.Style & RunStyle.Code) != 0 ? MarkdownStyles.CodeFillBrush(this) : null;
         return (foreground, background, CellStyle.Default.WithAttributes(attributes));
     }
 
     /// <summary>The foreground and attributes for a synthetic glyph (bullet, quote bar, ↵). Default: the marker accent color.</summary>
     protected virtual (IBrush Foreground, CellStyle Style) StyleForSynthetic(in Run run, IBrush inherited)
-        => (MarkdownStyles.MarkerBrush, CellStyle.Default);
+        => (MarkdownStyles.MarkerBrush(this), CellStyle.Default);
 
     /// <summary>The foreground and attributes for one revealed active-row cell.</summary>
     protected virtual (IBrush Foreground, CellStyle Style) ActiveCellStyle(RunKind cellKind, IBrush inherited)
     {
         if (cellKind is RunKind.RevealedMark or RunKind.Synthetic)
-            return (inherited, MarkdownStyles.Dim); // revealed marks and the ↵ affordance render faint
+            return (inherited, MarkdownStyles.Dim(this)); // revealed marks and the ↵ affordance render faint
 
         if (_kind == BlockKind.Heading)
-            return (MarkdownStyles.HeadingBrush(_headingLevel ?? 1),
-                CellStyle.Default.WithAttributes(MarkdownStyles.HeadingAttributes(_headingLevel ?? 1)));
+            return (MarkdownStyles.HeadingBrush(this, _headingLevel ?? 1),
+                CellStyle.Default.WithAttributes(MarkdownStyles.HeadingAttributes(this, _headingLevel ?? 1)));
 
         return (inherited, CellStyle.Default);
     }

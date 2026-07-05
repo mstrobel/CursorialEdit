@@ -77,7 +77,7 @@ public sealed class RawSourcePresenter : LeafBlockPresenter
                 int length = Math.Min(token.Length, text.Length - token.Start);
                 prevCell += GraphemeWidth.StringWidth(text.AsSpan(prevChar, token.Start - prevChar));
                 prevChar = token.Start;
-                context.DrawText(prevCell, row, text.AsSpan(token.Start, length), MiniHighlighter.BrushFor(token.Class), null);
+                context.DrawText(prevCell, row, text.AsSpan(token.Start, length), MarkdownStyles.RawMarkBrush(this, token.Class), null);
             }
         }
     }

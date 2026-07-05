@@ -38,7 +38,7 @@ public sealed class FallbackSourcePresenter : LeafBlockPresenter
         {
             string text = Lines[row].Text;
             if (text.Length > 0)
-                context.DrawText(0, row, text, MarkdownStyles.FrontMatterBrush, null, MarkdownStyles.Dim);
+                context.DrawText(0, row, text, MarkdownStyles.FrontMatterBrush(this), null, MarkdownStyles.Dim(this));
         }
     }
 }

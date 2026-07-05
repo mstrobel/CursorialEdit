@@ -36,5 +36,5 @@ public sealed class QuotePresenter : LeafBlockPresenter
 
     /// <inheritdoc/>
     protected override (IBrush Foreground, CellStyle Style) StyleForSynthetic(in Run run, IBrush inherited)
-        => (MarkdownStyles.QuoteBarBrush, CellStyle.Default);
+        => (MarkdownStyles.QuoteBarBrush(this), CellStyle.Default);
 }
