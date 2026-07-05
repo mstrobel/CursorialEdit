@@ -512,6 +512,11 @@ unchecked when "wrap for display" is off — the option is moot without display 
      base-last inversion** at each override — a future "call base first" tidy would silently break sync
      precedence. The pre-first-`OnCommandStateChanged` window is safe: with no parameter, coercion returns the
      base value (normal toggle), and `Handled` can't be set before command state is first queried.
+   - **Document the ordering on the `OnCommandStateChanged` API itself** (a `<remarks>`), so any future control
+     author sees the rule, not just the scattered per-override comments. Fold in the rationale so it reads as
+     load-bearing, e.g.: *"Derived controls may auto-assign a command parameter in this method. An override that
+     does so should assign before invoking the base implementation, which installs its own default parameter
+     when none is present — so the derived assignment takes precedence."*
 3. **What `Handled` coerces TO:** coerce to a parameter-specified value (not a hardcoded `false`) → gives
    greyed+checked ("on but locked") for free alongside greyed+unchecked.
 
