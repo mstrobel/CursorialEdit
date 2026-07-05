@@ -116,17 +116,31 @@ public sealed class RevealTests
 
         var after = harness.SnapshotCells();
 
-        // The whole block is active, so its non-active rows carry the WP9 well tint (a background-only
-        // change). The reveal no-reflow invariant is that no sibling row's CONTENT moves — assert the
-        // grapheme at every cell is unchanged (the well changes only the background, never a glyph).
+        // The whole block is active, so its non-active rows carry the WP9 well tint — a BACKGROUND-only
+        // change. The reveal no-reflow invariant is that revealing one line leaks nothing else onto a
+        // sibling: assert the grapheme, the FOREGROUND, and the ATTRIBUTES are all unchanged at every cell
+        // (only the background may differ, and only for the well). This keeps the style-leak guard the
+        // full-cell equality gave, without failing on the intentional well tint.
         for (var row = 0; row < harness.Rows; row++)
         {
             if (row == 1)
                 continue;
 
             for (var column = 0; column < harness.Columns; column++)
-                Assert.True(before[column, row].Grapheme == after[column, row].Grapheme,
-                    $"cell ({column},{row}) moved when a sibling line revealed");
+            {
+                var b = before[column, row];
+                var a = after[column, row];
+                Assert.True(b.Grapheme == a.Grapheme, $"cell ({column},{row}) glyph moved when a sibling line revealed");
+
+                // Guard foreground/attributes only where there is an actual glyph — an empty cell's
+                // foreground is meaningless and the well's background scrim resets it. What must not leak is
+                // a styled GLYPH on a sibling row being re-colored/re-attributed by the reveal.
+                if (!string.IsNullOrWhiteSpace(b.Grapheme))
+                {
+                    Assert.True(b.Style.Foreground == a.Style.Foreground, $"cell ({column},{row}) foreground leaked when a sibling line revealed");
+                    Assert.True(b.Style.Attributes == a.Style.Attributes, $"cell ({column},{row}) attributes leaked when a sibling line revealed");
+                }
+            }
         }
     }
 

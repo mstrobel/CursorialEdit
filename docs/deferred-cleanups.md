@@ -98,3 +98,31 @@ span-oracle literal/HTML blind spot — were fixed in the review-fix commit; the
   block** (a block not in the realized render band, e.g. after Ctrl+End into a long document), with no
   caching — each of VisualDocumentPosition / LocateCaret / MoveVertical re-runs `RunMapBuilder.Build`
   over the block's lines+inlines. Cache the last out-of-band (BlockId, width) → RunMap. (Review finding 4.)
+
+## WP8+WP9 review — deferred to WP11 (selection-tier rendering)
+
+Two confirmed selection-highlight findings share one root cause and one correct fix — composing the
+selection into the per-cell/run DrawText (the M1 PlainTextPresenter model), NOT a background pre-pass.
+The paint-order approaches both fail: painting the scrim BEFORE the rows is overwritten by a run's opaque
+background; painting it AFTER with a full-opacity SelectionBrush hides the glyph (PaintRectangle only
+"shows through" at partial opacity). This is a deliberate presenter-render refactor, and it lands naturally
+in **WP11 (caps + theme layer)**, which owns selection-tier rendering and the NoColor degradation:
+- **Selection over inline `code` shows a hole** — a `RunStyle.Code` run paints an opaque `CodeFillBrush`
+  background in RenderRows AFTER the selection scrim, so selected inline-code cells show the grey code fill
+  instead of the highlight. (Code BLOCKS are fine — their fill is a pre-pass under the scrim.) Fix: draw a
+  selected run with the selection brush as its cell background (split the run at the selection boundary).
+- **NoColor selection is invisible** — PaintSelection has no NoColor branch; M1 falls back to
+  `TextAttributes.Inverse`. Applying Inverse needs it in the selected cells' DrawText cellStyle (a scrim
+  Inverse is overwritten by the glyph draw), i.e. the same compose-into-draw refactor. WP11 owns the caps
+  tiers, so the NoColor selection test lands there with the caps-tier harness.
+
+## WP8+WP9 review — deferred cleanups (perf/dedup, non-behavioral)
+
+- **Plain-surface word motion issues per-character run-map queries** (DocumentCaret) instead of reusing the
+  existing O(n) `CaretNavigator.NextWord`/`PrevWord`; `MoveWordLeft` recomputes `PrevVisibleStop` twice per
+  char. Reuse the tested word logic on the plain path. (Findings 4, 5.)
+- **`TryCell`/`Visible` re-derive the `(blockIndex, map, rel)` triple `LocateCaret` already computes** — the
+  mapping now lives in three copies; unify. (Finding 6.)
+- **`MarkdownEditingHarness` is a near-verbatim copy of `EditingHarness`** differing only in producer/bridge
+  types; factor the shared driver. (Finding 7.)
+- **`PaintSelection` re-derives the valid-active-line guard `RenderRows` already computed.** (Finding 8.)
