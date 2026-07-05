@@ -99,22 +99,15 @@ span-oracle literal/HTML blind spot — were fixed in the review-fix commit; the
   caching — each of VisualDocumentPosition / LocateCaret / MoveVertical re-runs `RunMapBuilder.Build`
   over the block's lines+inlines. Cache the last out-of-band (BlockId, width) → RunMap. (Review finding 4.)
 
-## WP8+WP9 review — deferred to WP11 (selection-tier rendering)
+## WP8+WP9 review — selection-tier rendering — ✅ RESOLVED in WP11b (de3ab56)
 
-Two confirmed selection-highlight findings share one root cause and one correct fix — composing the
-selection into the per-cell/run DrawText (the M1 PlainTextPresenter model), NOT a background pre-pass.
-The paint-order approaches both fail: painting the scrim BEFORE the rows is overwritten by a run's opaque
-background; painting it AFTER with a full-opacity SelectionBrush hides the glyph (PaintRectangle only
-"shows through" at partial opacity). This is a deliberate presenter-render refactor, and it lands naturally
-in **WP11 (caps + theme layer)**, which owns selection-tier rendering and the NoColor degradation:
-- **Selection over inline `code` shows a hole** — a `RunStyle.Code` run paints an opaque `CodeFillBrush`
-  background in RenderRows AFTER the selection scrim, so selected inline-code cells show the grey code fill
-  instead of the highlight. (Code BLOCKS are fine — their fill is a pre-pass under the scrim.) Fix: draw a
-  selected run with the selection brush as its cell background (split the run at the selection boundary).
-- **NoColor selection is invisible** — PaintSelection has no NoColor branch; M1 falls back to
-  `TextAttributes.Inverse`. Applying Inverse needs it in the selected cells' DrawText cellStyle (a scrim
-  Inverse is overwritten by the glyph draw), i.e. the same compose-into-draw refactor. WP11 owns the caps
-  tiers, so the NoColor selection test lands there with the caps-tier harness.
+Both selection-highlight findings (inline-code/code-block hole; NoColor invisibility) were fixed in
+M2.WP11b by composing the selection into the per-cell/run DrawText (the M1 PlainTextPresenter model,
+via `LeafBlockPresenter.DrawSelectableText`/`DrawSelectedSpan`) instead of a background pre-pass — the
+selected sub-span draws with the SelectionBrush as its own background (so a run's opaque code fill can't
+punch a hole) and on the NoColor tier with `TextAttributes.Inverse` composed into the cell style. Cleanup
+finding 8 below (`PaintSelection` re-derives the active-line guard) is also moot — `PaintSelection` was
+deleted. Kept here as a record.
 
 ## WP8+WP9 review — deferred cleanups (perf/dedup, non-behavioral)
 
