@@ -355,7 +355,9 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     /// <inheritdoc/>
     public TableModel? GetTableModel(int blockIndex)
     {
-        if (blockIndex < 0 || blockIndex >= Blocks.Count)
+        // Raw mode renders (and edits) the table's source verbatim — no cell routing, no pipe escaping, no
+        // cell-bounded delete (bug 2). GetCaretMap gates the same way, so the two stay consistent.
+        if (_viewMode != ViewMode.Formatted || blockIndex < 0 || blockIndex >= Blocks.Count)
             return null;
 
         var block = Blocks[blockIndex];

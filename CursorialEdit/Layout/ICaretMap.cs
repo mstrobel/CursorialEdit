@@ -39,4 +39,12 @@ public interface ICaretMap
     /// the mouse hit-test landing (rounded to the closer cluster boundary where the map can).
     /// </summary>
     int NearestOffset(int row, int cell);
+
+    /// <summary>
+    /// Whether visual <paramref name="row"/> carries a caret stop — <see langword="true"/> for every ordinary
+    /// text/formatted row, <see langword="false"/> for a row the caret can never rest on (a table's
+    /// box-drawing border / delimiter rows). Vertical motion steps <b>past</b> non-caret rows in the travel
+    /// direction rather than snapping back, so the caret is never trapped inside a table (M3.WP4 bug 1).
+    /// </summary>
+    bool HasCaretStop(int row) => true;
 }

@@ -85,6 +85,23 @@ public sealed class TableModel
     /// <summary>Whether logical <paramref name="row"/> is the (always-present) header row — GFM row 0.</summary>
     public bool IsHeaderRow(int row) => _rows[row].IsHeader;
 
+    /// <summary>
+    /// Whether any logical row renders on block-relative source <paramref name="line"/> — the guard that
+    /// keeps cell routing off the delimiter line and, above all, off an <b>absorbed trailing blank line</b>
+    /// (a table block swallows the blank line after it): pressing Enter below a trailing table lands the
+    /// caret on such a blank line, which must edit as an ordinary paragraph, not the last cell (M3.WP4 bug 5).
+    /// </summary>
+    public bool HasRowOnLine(int line)
+    {
+        foreach (var row in _rows)
+        {
+            if (row.SourceLine == line)
+                return true;
+        }
+
+        return false;
+    }
+
     /// <summary>The block-relative source line index logical <paramref name="row"/> renders (the delimiter line is skipped, so body rows are not contiguous with the header).</summary>
     public int RowSourceLine(int row) => _rows[row].SourceLine;
 
@@ -133,7 +150,9 @@ public sealed class TableModel
             var cells = _rows[r].Cells;
             for (var c = 0; c < cells.Length; c++)
             {
-                int start = cells[c].IsEmpty ? cells[c].Start : Content(cells[c]).SrcStart;
+                // The cell owns from its source start (empty anchor, or the span start incl. leading padding).
+                // Read the span start directly — no trimmed-string allocation per cell per keystroke (cleanup 9).
+                int start = cells[c].Start;
                 if (start <= blockRelOffset && start >= bestStart)
                 {
                     bestStart = start;
@@ -268,13 +287,41 @@ public sealed class TableModel
             }
         }
 
-        // Row source lines are a GFM structural invariant: line 0 is the header, line 1 the delimiter, and
-        // body row i (i ≥ 1) is line i + 1. This holds even for an all-empty row (e.g. a just-appended
-        // `|   |   |`), whose Markdig row span is empty and so cannot be located from its cells (M3.WP4).
+        // Row source lines, source-accurate (bug 4): a row with any real cell span is located directly from
+        // that span (robust to a leading blank/whitespace line in the block source — a hardcoded header(0)/
+        // delimiter(1)/body(i+1) index would resolve the wrong physical line there). An all-empty row (whose
+        // Markdig span is empty — e.g. a just-appended `|   |   |`) is interpolated from its neighbours over
+        // the GFM line structure: body rows are physically consecutive, and the delimiter sits only between
+        // the header row 0 and the first body row 1 (so the row-0→row-1 gap is 2 lines, every other gap 1).
         var lineStarts = LineStartOffsets(blockSource);
         var rowLines = new int[rowSpans.Count];
         for (var i = 0; i < rowSpans.Count; i++)
-            rowLines[i] = i == 0 ? 0 : i + 1;
+        {
+            rowLines[i] = -1;
+            foreach (var span in rowSpans[i])
+            {
+                if (!span.IsEmpty)
+                {
+                    rowLines[i] = SourceLineAt(blockSource, span.Start);
+                    break;
+                }
+            }
+        }
+
+        for (var i = 1; i < rowLines.Length; i++)
+        {
+            if (rowLines[i] < 0 && rowLines[i - 1] >= 0)
+                rowLines[i] = rowLines[i - 1] + (i == 1 ? 2 : 1); // +2 skips the delimiter after the header
+        }
+
+        for (var i = rowLines.Length - 2; i >= 0; i--)
+        {
+            if (rowLines[i] < 0 && rowLines[i + 1] >= 0)
+                rowLines[i] = Math.Max(0, rowLines[i + 1] - (i + 1 == 1 ? 2 : 1));
+        }
+
+        if (rowLines.Length > 0 && rowLines[0] < 0)
+            rowLines[0] = 0; // an all-empty table with no locatable row — degenerate; header at the origin
 
         // Spike review #6 / M3.WP4 point 0: give every empty cell a real inter-pipe *insertion anchor*
         // (Start), not the block origin. An empty cell's <see cref="CellSpan"/> keeps IsEmpty (Length 0),
@@ -318,6 +365,20 @@ public sealed class TableModel
             return CellSpan.Empty;
 
         return new CellSpan(start, length);
+    }
+
+    /// <summary>The 0-based source line index containing block-relative <paramref name="offset"/> (a <c>'\n'</c> count) — the source-accurate row-line locator (bug 4).</summary>
+    private static int SourceLineAt(string source, int offset)
+    {
+        int line = 0;
+        int end = Math.Clamp(offset, 0, source.Length);
+        for (var i = 0; i < end; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
     }
 
     /// <summary>The block-relative offset each source line begins at (<c>0</c>, then every position after a <c>'\n'</c>).</summary>

@@ -63,7 +63,6 @@ public sealed class TableEditingController
         if (string.IsNullOrEmpty(text))
             return TableCommand.NoOperation;
 
-        string sanitized = Sanitize(text, collapseBreaks);
         int caretOffset = _buffer.GetOffset(caret);
         if (model.CellOfOffset(caretOffset - blockStart) is not { } cell)
             return TableCommand.NoOperation;
@@ -72,9 +71,11 @@ public sealed class TableEditingController
         {
             // Pad the empty inter-pipe whitespace region to `│ text │` (the region is whitespace-only —
             // Markdig classified the cell empty — so scanning it is escape-safe). The caret lands after the
-            // typed content, before the trailing pad, ready for more typing.
+            // typed content, before the trailing pad, ready for more typing. The leading pad resets the
+            // backslash parity, so the escaping starts from a clean (even) run.
             var pos = _buffer.GetPosition(caretOffset);
             string line = _buffer.GetLine(pos.Line).Text;
+            string sanitized = Sanitize(text, collapseBreaks, precedingBackslashes: 0);
             var (from, to) = WhitespaceRegion(line, pos.Col);
             string removed = line.Substring(from, to - from);
             var editStart = new TextPosition(pos.Line, from);
@@ -82,10 +83,51 @@ public sealed class TableEditingController
             return TableCommand.Splice(new Edit(editStart, removed, " " + sanitized + " "), kind, target);
         }
 
+        // Escape a typed/pasted '|' against the backslashes ALREADY before the caret (bug 8): after a cell
+        // ending in an odd '\' run (e.g. `C:\`) a bare '|' is already escaped, so adding another '\' would
+        // make `\\|` — an escaped backslash + a bare separator pipe that splits the cell.
+        string cellLine = _buffer.GetLine(caret.Line).Text;
+        string sane = Sanitize(text, collapseBreaks, BackslashRunBefore(cellLine, caret.Col));
+
         // Sanitised text carries no line break, so the landing stays on the caret's line (computed
         // arithmetically — caretOffset + length may lie beyond the pre-edit buffer for a large paste).
-        var end = new TextPosition(caret.Line, caret.Col + sanitized.Length);
-        return TableCommand.Splice(new Edit(caret, string.Empty, sanitized), kind, end);
+        var end = new TextPosition(caret.Line, caret.Col + sane.Length);
+        return TableCommand.Splice(new Edit(caret, string.Empty, sane), kind, end);
+    }
+
+    /// <summary>
+    /// Replaces a selection whose caret cell is in a table (M3.WP4 bug 3): typing / backspace / delete /
+    /// paste over a selection route here. The replaced range is <b>clamped to the caret cell's content</b>
+    /// so a selection spanning a cell boundary never deletes the separating <c>|</c> (whole-cell / cell-rect
+    /// selection is WP8); the inserted text is pipe-escaped like an ordinary in-cell edit.
+    /// </summary>
+    public TableCommand Replace(TableModel model, int blockStart, TextPosition selStart, TextPosition selEnd, string text, EditKind kind, bool collapseBreaks)
+    {
+        int startOffset = _buffer.GetOffset(selStart);
+        int endOffset = _buffer.GetOffset(selEnd);
+        if (endOffset < startOffset)
+            (startOffset, endOffset) = (endOffset, startOffset);
+
+        if (model.CellOfOffset(startOffset - blockStart) is not { } cell)
+            return TableCommand.NoOperation;
+
+        // An empty cell has nothing selectable to replace — fall back to the padding insert at the anchor.
+        if (model.IsCellEmpty(cell.Row, cell.Column))
+            return Insert(model, blockStart, _buffer.GetPosition(startOffset), text, kind, collapseBreaks);
+
+        var (contentStart, contentEnd) = model.CellContentRange(cell.Row, cell.Column);
+        int clampStart = blockStart + Math.Clamp(startOffset - blockStart, contentStart, contentEnd);
+        int clampEnd = blockStart + Math.Clamp(endOffset - blockStart, contentStart, contentEnd);
+
+        var startPos = _buffer.GetPosition(clampStart);
+        string line = _buffer.GetLine(startPos.Line).Text;
+        string sanitized = Sanitize(text ?? string.Empty, collapseBreaks, BackslashRunBefore(line, startPos.Col));
+        string removed = clampEnd > clampStart ? _buffer.GetTextAtOffset(clampStart, clampEnd - clampStart) : string.Empty;
+        if (removed.Length == 0 && sanitized.Length == 0)
+            return TableCommand.NoOperation;
+
+        var target = new TextPosition(startPos.Line, startPos.Col + sanitized.Length);
+        return TableCommand.Splice(new Edit(startPos, removed, sanitized), kind, target);
     }
 
     /// <summary>Backspace within the caret's cell — deletes the previous grapheme cluster, bounded to the cell (never merges cells or deletes a pipe).</summary>
@@ -96,13 +138,22 @@ public sealed class TableEditingController
             return TableCommand.NoOperation;
 
         var (contentStart, _) = model.CellContentRange(cell.Row, cell.Column);
-        if (caretOffset - blockStart <= contentStart)
+        int caretRel = caretOffset - blockStart;
+        if (caretRel <= contentStart)
             return TableCommand.NoOperation; // at (or before) the cell's content start — nothing to delete in-cell
 
         string line = _buffer.GetLine(caret.Line).Text;
         int prev = PrevCluster(line, caret.Col);
         if (prev >= caret.Col)
             return TableCommand.NoOperation;
+
+        // Escape-aware (bug 7): an escaped `\|` is ONE atomic unit — deleting the '|' alone would expose a
+        // bare separator pipe. When the deleted cluster is a '|' with an odd backslash run before it (so it
+        // IS escaped), take the escaping '\' too, bounded to the cell content.
+        int contentStartCol = contentStart - caretRel + caret.Col;
+        if (caret.Col - prev == 1 && line[prev] == '|'
+            && BackslashRunBefore(line, prev) % 2 == 1 && prev - 1 >= contentStartCol)
+            prev -= 1;
 
         var start = new TextPosition(caret.Line, prev);
         return TableCommand.Splice(new Edit(start, line[prev..caret.Col], string.Empty), EditKind.Typing, start);
@@ -116,13 +167,23 @@ public sealed class TableEditingController
             return TableCommand.NoOperation;
 
         var (_, contentEnd) = model.CellContentRange(cell.Row, cell.Column);
-        if (caretOffset - blockStart >= contentEnd)
+        int caretRel = caretOffset - blockStart;
+        if (caretRel >= contentEnd)
             return TableCommand.NoOperation; // at (or past) the cell's content end — nothing to delete in-cell
 
         string line = _buffer.GetLine(caret.Line).Text;
         int next = NextCluster(line, caret.Col);
         if (next <= caret.Col)
             return TableCommand.NoOperation;
+
+        // Escape-aware (bug 7): forward-deleting the '\' of a `\|` escape would expose a bare separator pipe.
+        // When the deleted cluster is a '\' with an even backslash run before it (so it escapes the following
+        // '|'), take the '|' too, bounded to the cell content.
+        int contentEndCol = contentEnd - caretRel + caret.Col;
+        if (next - caret.Col == 1 && line[caret.Col] == '\\'
+            && caret.Col + 1 < line.Length && line[caret.Col + 1] == '|'
+            && BackslashRunBefore(line, caret.Col) % 2 == 0 && next + 1 <= contentEndCol)
+            next += 1;
 
         return TableCommand.Splice(new Edit(caret, line[caret.Col..next], string.Empty), EditKind.Typing, caret);
     }
@@ -221,35 +282,61 @@ public sealed class TableEditingController
 
     // ───────────────────────────── text hygiene ─────────────────────────────
 
-    /// <summary>Escapes a value for a single GFM cell: <c>|</c> → <c>\|</c> always, and (for paste) every line break → a single space so a multi-line payload stays one row.</summary>
-    private static string Sanitize(string text, bool collapseBreaks)
+    /// <summary>
+    /// Escapes a value for a single GFM cell: a <c>|</c> is escaped to <c>\|</c> <b>only when it is not
+    /// already escaped by the backslashes before it</b> (bug 8 — backslash parity, seeded by
+    /// <paramref name="precedingBackslashes"/> in the buffer and carried through the value), and — for paste
+    /// (<paramref name="collapseBreaks"/>) — every line break becomes a single space so a multi-line payload
+    /// stays one row.
+    /// </summary>
+    private static string Sanitize(string text, bool collapseBreaks, int precedingBackslashes)
     {
         bool hasPipe = text.Contains('|');
         bool hasBreak = collapseBreaks && (text.Contains('\n') || text.Contains('\r'));
         if (!hasPipe && !hasBreak)
-            return text;
+            return text; // no pipe ⇒ parity is irrelevant, and no break to collapse
 
         var sb = new StringBuilder(text.Length + 8);
+        int backslashes = precedingBackslashes; // consecutive '\' immediately before the current output point
         for (var i = 0; i < text.Length; i++)
         {
             char c = text[i];
             if (c == '|')
             {
-                sb.Append("\\|");
+                if (backslashes % 2 == 0)
+                    sb.Append('\\'); // an even '\' run leaves the '|' unescaped — add the escape
+                sb.Append('|');
+                backslashes = 0;
             }
             else if (collapseBreaks && (c == '\n' || c == '\r'))
             {
                 if (c == '\r' && i + 1 < text.Length && text[i + 1] == '\n')
                     i++; // CRLF → one space
                 sb.Append(' ');
+                backslashes = 0;
             }
             else
             {
                 sb.Append(c);
+                backslashes = c == '\\' ? backslashes + 1 : 0;
             }
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>The number of consecutive backslashes immediately before <paramref name="col"/> in <paramref name="line"/> — the escape-parity input for pipe escaping and escaped-pipe deletion.</summary>
+    private static int BackslashRunBefore(string line, int col)
+    {
+        int count = 0;
+        int i = Math.Clamp(col, 0, line.Length) - 1;
+        while (i >= 0 && line[i] == '\\')
+        {
+            count++;
+            i--;
+        }
+
+        return count;
     }
 
     /// <summary>The whitespace run of <paramref name="line"/> around <paramref name="col"/>, bounded by a pipe or non-space on each side — an empty cell's inter-pipe region.</summary>
@@ -267,6 +354,10 @@ public sealed class TableEditingController
     private static bool IsPad(char c) => c is ' ' or '\t';
 
     // ───────────────────────────── cluster boundaries (single-line) ─────────────────────────────
+    // Note (cleanup 10): these mirror CaretNavigator.Prev/NextCluster, but that lives in the app-layer
+    // CursorialEdit.Layout project, which references this (Document) project — not the other way round — so
+    // it is unreachable here. A shared grapheme-boundary helper would have to move down into Document (or
+    // Cursorial.Text) to dedup; out of scope for this WP, so the single-line copies stay.
 
     private static int PrevCluster(ReadOnlySpan<char> line, int col)
     {

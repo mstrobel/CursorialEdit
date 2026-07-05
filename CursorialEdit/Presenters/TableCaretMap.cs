@@ -177,6 +177,9 @@ internal sealed class TableCaretMap : ICaretMap
     /// <inheritdoc/>
     public int NearestOffset(int row, int cell) => OffsetAt(row, cell);
 
+    /// <inheritdoc/>
+    public bool HasCaretStop(int row) => (uint)row < (uint)_rows.Length && _rows[row].Stops.Length > 0;
+
     // ───────────────────────────── helpers ─────────────────────────────
 
     private int LargestStartAtOrBefore(int srcOffset)

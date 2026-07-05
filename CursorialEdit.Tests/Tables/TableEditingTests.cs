@@ -4,6 +4,7 @@ using CursorialEdit.Document.Buffer;
 using CursorialEdit.Document.Editing;
 using CursorialEdit.Document.Model;
 using CursorialEdit.Tests.Editing;
+using CursorialEdit.Views;
 
 namespace CursorialEdit.Tests.Tables;
 
@@ -291,6 +292,170 @@ public sealed class TableEditingTests
 
         Assert.Contains("<br>", Line(h, 2)); // a literal cell break was inserted in-cell
         Assert.Equal(2, Model(h).ColumnCount);
+    }
+
+    // ═════════════════════════════ review round 2 — correctness bug regressions ═════════════════════════════
+
+    // Bug 1 — vertical motion must EXIT the table across its border rows, not snap back.
+    [Fact]
+    public void ArrowDown_FromLastBodyRow_ExitsToBlockBelow()
+    {
+        // Table at the top (grid rows 0..4), then "below" at window row 5.
+        using var h = MarkdownEditingHarness.Create("| A | B |\n|---|---|\n| 1 | 2 |\n\nbelow\n", columns: 40, rows: 18);
+
+        h.Click(2, 3);        // body cell (1,0) "1" — the last body row (grid row 3)
+        Assert.Equal((1, 0), Cell(h));
+        h.Key(Key.DownArrow); // steps off the table's bottom border into the block below
+
+        int block = h.Blocks.IndexOfLine(h.Caret.Position.Line);
+        Assert.NotEqual(BlockKind.Table, h.Blocks[block].Kind);
+        Assert.Equal("below", Line(h, h.Caret.Position.Line));
+    }
+
+    [Fact]
+    public void ArrowUp_FromHeaderRow_ExitsToBlockAbove()
+    {
+        // "above" at window row 0, blank at row 1, the grid's header content at window row 3.
+        using var h = MarkdownEditingHarness.Create("above\n\n| A | B |\n|---|---|\n| 1 | 2 |\n", columns: 40, rows: 18);
+
+        h.Click(2, 3);      // header cell (0,0) "A"
+        Assert.Equal((0, 0), Cell(h));
+        h.Key(Key.UpArrow); // steps off the table's top border out of the table (not trapped)
+
+        Assert.False(h.Caret.IsInTable); // left the table upward
+        Assert.True(h.Caret.Position.Line < h.Blocks.GetStartLine(1)); // above the table block
+    }
+
+    // Bug 2 — raw view edits the source verbatim: no cell routing, no pipe escaping.
+    [Fact]
+    public void RawMode_TypingPipe_InsertsLiteralPipe_NoCellRouting()
+    {
+        using var h = MarkdownEditingHarness.Create("| A | B |\n|---|---|\n| 1 | 2 |\n", columns: 40, rows: 12);
+
+        h.Editor.ToggleViewMode(); // → raw source
+        h.Settle();
+        Assert.Equal(ViewMode.Raw, h.Editor.ViewMode);
+
+        h.Click(0, 0);  // start of the first source line
+        Assert.False(h.Caret.IsInTable); // raw mode: not routed as a table cell
+        h.Type("|");
+
+        Assert.StartsWith("||", Line(h, 0));            // a literal '|' was inserted verbatim
+        Assert.DoesNotContain("\\|", h.Buffer.GetText()); // no escaping happened
+    }
+
+    // Bug 3 — a selection spanning a cell boundary must not delete the separating pipe.
+    [Fact]
+    public void TypingOverCrossCellSelection_PreservesStructure()
+    {
+        using var h = MarkdownEditingHarness.Create("| AB | CD |\n|---|---|\n| 1 | 2 |\n", columns: 40, rows: 12);
+
+        h.Click(2, 1); // header cell (0,0), before 'A'
+        for (var i = 0; i < 6; i++)
+            h.Key(Key.RightArrow, KeyModifiers.Shift); // extend the selection across the cell boundary
+        Assert.True(h.Caret.HasSelection);
+        h.Type("z"); // replace — clamped to the caret cell, the '|' survives
+
+        var model = Model(h);
+        Assert.Equal(2, model.ColumnCount); // still two columns — the separating pipe was not deleted
+        Assert.Equal(2, model.RowCount);
+    }
+
+    // Bug 4 — a table whose block source has a LEADING blank line resolves the empty cell's line correctly.
+    [Fact]
+    public void EmptyCell_InTableWithLeadingBlankSourceLine_InsertsAtCorrectOffset()
+    {
+        using var h = MarkdownEditingHarness.Create("\n| a | | c |\n|---|---|---|\n", columns: 40, rows: 10);
+
+        // The table block's source begins with a blank line (line 0); the header is physical line 1.
+        Assert.Equal(BlockKind.Table, h.Blocks[0].Kind);
+        Assert.Equal(1, Model(h).RowSourceLine(0)); // source-accurate: header on line 1, not 0
+
+        h.Click(2, 1); // header cell (0,0) "a" (grid row 1)
+        h.Key(Key.Tab); // into the empty middle cell (0,1)
+        h.Type("X");
+
+        Assert.Equal("", Line(h, 0));               // the leading blank line is untouched (not the block origin)
+        Assert.Equal("| a | X | c |", Line(h, 1));  // inserted at the empty cell on its real physical line
+    }
+
+    // Bug 5 — Enter on the last row of a document-final table creates an editable line below.
+    [Fact]
+    public void Enter_OnLastRowOfTrailingTable_AddsLineBelow()
+    {
+        using var h = MarkdownEditingHarness.Create("| A | B |\n|---|---|\n| 1 | 2 |", columns: 40, rows: 12);
+        int linesBefore = h.Buffer.LineCount;
+
+        h.Click(2, 3); // body cell (1,0), the last row
+        h.Key(Key.Enter);
+
+        Assert.Equal(linesBefore + 1, h.Buffer.LineCount); // a new line was added
+        Assert.False(h.Caret.IsInTable);                   // the caret left the table
+        h.Type("done");
+        Assert.Equal("done", Line(h, h.Caret.Position.Line)); // the new line is editable
+    }
+
+    // Bug 6 — Enter exiting into ANOTHER table lands in its first cell, not on the dead leading pipe.
+    [Fact]
+    public void Enter_ExitingIntoAnotherTable_LandsInItsFirstCell()
+    {
+        using var h = MarkdownEditingHarness.Create(
+            "| A | B |\n|---|---|\n| 1 | 2 |\n\n| C | D |\n|---|---|\n| 3 | 4 |\n", columns: 40, rows: 20);
+
+        h.Click(2, 3); // first table, body cell (1,0)
+        h.Key(Key.Enter);
+
+        int block = h.Blocks.IndexOfLine(h.Caret.Position.Line);
+        Assert.Equal(BlockKind.Table, h.Blocks[block].Kind); // landed in the SECOND table
+        Assert.Equal(1, block);
+        var second = h.Bridge.GetTableModel(block)!;
+        int rel = h.Buffer.GetOffset(h.Caret.Position) - h.Buffer.GetOffset(new TextPosition(h.Blocks.GetStartLine(block), 0));
+        Assert.Equal((0, 0), second.CellOfOffset(rel)!.Value); // a live caret in its first cell
+    }
+
+    // Bug 7 — backspace/delete over an escaped '\|' remove BOTH chars (never expose a bare pipe).
+    [Fact]
+    public void Backspace_OverEscapedPipe_RemovesWholeEscape()
+    {
+        using var h = MarkdownEditingHarness.Create("| a\\|b | B |\n|---|---|\n| 1 | 2 |\n", columns: 40, rows: 12);
+
+        h.Click(2, 1); // before 'a'
+        h.Key(Key.RightArrow);
+        h.Key(Key.RightArrow);
+        h.Key(Key.RightArrow); // caret now after the '|' (between '|' and 'b')
+        h.Key(Key.Backspace);  // removes the whole '\|'
+
+        Assert.Equal("| ab | B |", Line(h, 0));
+        Assert.Equal(2, Model(h).ColumnCount);
+    }
+
+    [Fact]
+    public void Delete_OverEscapedPipe_RemovesWholeEscape()
+    {
+        using var h = MarkdownEditingHarness.Create("| a\\|b | B |\n|---|---|\n| 1 | 2 |\n", columns: 40, rows: 12);
+
+        h.Click(2, 1); // before 'a'
+        h.Key(Key.RightArrow); // caret after 'a' (before the '\')
+        h.Key(Key.Delete);     // forward-deletes the whole '\|'
+
+        Assert.Equal("| ab | B |", Line(h, 0));
+        Assert.Equal(2, Model(h).ColumnCount);
+    }
+
+    // Bug 8 — typing '|' after a trailing backslash keeps ONE cell (backslash parity).
+    [Fact]
+    public void TypedPipe_AfterTrailingBackslash_StaysInOneCell()
+    {
+        using var h = MarkdownEditingHarness.Create("| C:\\ | B |\n|---|---|\n| 1 | 2 |\n", columns: 40, rows: 12);
+
+        h.Click(2, 1); // before 'C'
+        h.Key(Key.RightArrow);
+        h.Key(Key.RightArrow);
+        h.Key(Key.RightArrow); // caret after the trailing '\'
+        h.Type("|");
+
+        Assert.Equal("| C:\\| | B |", Line(h, 0)); // bare '|' appended (already escaped by the preceding '\')
+        Assert.Equal(2, Model(h).ColumnCount);      // NOT '\\|' — the cell did not split
     }
 
     // ───────────────────────────── helpers ─────────────────────────────
