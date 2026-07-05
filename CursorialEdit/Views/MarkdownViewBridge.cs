@@ -231,8 +231,33 @@ public sealed class MarkdownViewBridge : IEditorViewSource
             BlockKind.List => new ListItemPresenter(lines, block.InlineRuns),
             BlockKind.ThematicBreak => new RulePresenter(lines),
             BlockKind.FrontMatter => new FrontMatterPresenter(lines),
+            BlockKind.Table => SelectTablePresenter(lines, block),
             _ => new FallbackSourcePresenter(lines, block.Kind),
         };
+    }
+
+    /// <summary>
+    /// The M3.WP2 table presenter, or the dimmed-literal fallback when the block carries no Markdig table
+    /// (a malformed/synthetic table block — <see cref="TableModel.Build"/> returns <see langword="null"/>).
+    /// The <see cref="TableModel"/> is built here (in the app project) via the Document-project factory, so
+    /// no Markdig type crosses into the view (the quarantine holds — <c>ArchitectureTests</c>).
+    /// </summary>
+    private LeafBlockPresenter SelectTablePresenter(IReadOnlyList<Line> lines, Block block)
+    {
+        string source = BlockSource(lines);
+        var model = TableModel.Build(block, source);
+        return model is null
+            ? new FallbackSourcePresenter(lines, block.Kind)
+            : new TablePresenter(lines, model, source);
+    }
+
+    /// <summary>A block's serialized source (lines + terminators) — the same string <c>LeafBlockPresenter.BlockText()</c> produces, so table cell spans index it.</summary>
+    private static string BlockSource(IReadOnlyList<Line> lines)
+    {
+        var builder = new System.Text.StringBuilder();
+        foreach (var line in lines)
+            builder.Append(line.Text).Append(line.EndingText);
+        return builder.ToString();
     }
 
     private void Deregister(BlockId id, LeafBlockPresenter presenter)
@@ -372,7 +397,22 @@ public sealed class MarkdownViewBridge : IEditorViewSource
             return; // left the list between the change and this walk (defensive)
 
         var block = Blocks[index];
-        presenter.SetContent(BuildLines(index, block), block.InlineRuns, block.HeadingLevel);
+        var lines = BuildLines(index, block);
+
+        // A table re-derives its whole overlay (fresh Markdig cell spans + widths) and reconciles its per-row
+        // children in place; every other kind re-derives its inline runs. A block that flipped INTO a table
+        // (or out of one) changed kind → new BlockId → Added/Removed, so it never reaches this same-id path.
+        if (presenter is TablePresenter table)
+        {
+            string source = BlockSource(lines);
+            if (TableModel.Build(block, source) is { } model)
+            {
+                table.SetTable(lines, model, source);
+                return;
+            }
+        }
+
+        presenter.SetContent(lines, block.InlineRuns, block.HeadingLevel);
     }
 
     // ───────────────────────────── heights ─────────────────────────────
