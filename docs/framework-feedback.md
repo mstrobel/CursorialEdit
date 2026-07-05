@@ -497,10 +497,21 @@ unchecked when "wrap for display" is off — the option is moot without display 
 1. **Re-coercion trigger:** the parameter isn't a DP, so `Handled`/value changes won't auto-invalidate. The
    control must `CoerceValue(IsCheckedProperty)` on the `CanExecuteChanged`/`OnCommandStateChanged` hook it
    already uses to re-query command state — the single wiring point; the signal already exists.
-2. **Where the default parameter lives (interacts with the "one command drives every surface" invariant in
-   `CommandParameters.cs`):** mint the auto-default **once per command (on `BarCommand`) and share it** across
-   all controls bound to it — NOT per control, or two surfaces hosting the same toggle diverge. Each control
-   mirrors `IsChecked` from the shared parameter as its base value and coerces display locally.
+2. **Where the default parameter lives (RESOLVED, Mike 2026-07-05):** `ToggleButton` (Cursorial.UI) provides
+   its own **per-control** default parameter, so it works standalone and stays command-agnostic. `BarCommandSync`
+   (Bars — already owns "one command drives every surface") **replaces** that per-control default with a
+   command-**shared** parameter at bind time, so multi-surface sync is the sync layer's job, not the base
+   control's or `BarCommand`'s. The swap (and the unbind revert) should trigger `CoerceValue(IsCheckedProperty)`
+   immediately — same re-coercion as `CanExecuteChanged` — so the displayed state snaps to the shared
+   parameter's `Handled`/value at bind time instead of lagging to the first re-query.
+   - **Lazy allocation of the per-control default (impl, Mike 2026-07-05):** allocate it in
+     `OnCommandStateChanged` only when `IsChecked`'s base value source `Kind == Default` (nothing has
+     provided a checked source yet). Reorder the bar buttons' `OnCommandStateChanged` overrides to run their
+     sync logic BEFORE `base.OnCommandStateChanged()`, so `BarCommandSync` installs the shared parameter first
+     (making the source non-`Default`) and the base then skips the per-control allocation. **Comment this
+     base-last inversion** at each override — a future "call base first" tidy would silently break sync
+     precedence. The pre-first-`OnCommandStateChanged` window is safe: with no parameter, coercion returns the
+     base value (normal toggle), and `Handled` can't be set before command state is first queried.
 3. **What `Handled` coerces TO:** coerce to a parameter-specified value (not a hardcoded `false`) → gives
    greyed+checked ("on but locked") for free alongside greyed+unchecked.
 
