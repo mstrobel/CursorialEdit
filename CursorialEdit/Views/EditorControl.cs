@@ -312,7 +312,10 @@ public class EditorControl : Control, IContentRowMap
         // legacy wire can't distinguish Ctrl+/ (it decodes to the ignored 0x1F byte, FB-14.1). Both chords
         // are bound unconditionally, mirroring the dual Ctrl+Shift+Z / Ctrl+Y redo arm: whichever the wire
         // can deliver fires. Handled before the caret branch because Alt chords otherwise bubble there.
-        if (_bridge is not null && IsViewModeToggle(e))
+        // Only the markdown surface has marks to hide, so the toggle is meaningful only there. On the
+        // plain-text surface raw == formatted, so we neither run the (wasteful) presenter re-realization
+        // nor swallow the key — it passes through untouched.
+        if (_bridge is MarkdownViewBridge && IsViewModeToggle(e))
         {
             ToggleViewMode();
             e.Handled = true;
@@ -528,8 +531,12 @@ public class EditorControl : Control, IContentRowMap
 
         bridge.ViewMode = mode;         // drops cached heights + active block, raises HeightsChanged (extent re-derives)
         _panel?.RefreshRealizations();  // swap every block's presenter type (formatted suite ⇄ raw) on the next measure
-        if (_hasFocus)
-            PublishCaret();             // re-anchor the terminal caret at its (mode-independent) source position
+
+        // Re-anchor AND scroll-follow the caret: the mode switch changes every block's height (raw = line
+        // count, formatted = wrapped/revealed rows), so the caret's document row shifts under a preserved
+        // scroll offset — without EnsureVisible the caret/edited line can be left off-screen. OnCaretUpdated
+        // publishes the terminal caret (when focused) and calls ScrollViewer.EnsureVisible on its new row.
+        OnCaretUpdated();
     }
 
     /// <summary>Whether <paramref name="e"/> is the view-mode toggle chord (Ctrl+/ or Alt+/, no other modifier).</summary>

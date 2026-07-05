@@ -106,4 +106,44 @@ public sealed class ViewModeToggleTests
         Assert.Fail($"no row starting with '{prefix}'");
         return -1;
     }
+
+    [Theory]
+    [MemberData(nameof(Presets))]
+    public void RawMode_LongLine_EndKeepsTheCaretVisible(string preset)
+    {
+        // A source line far wider than the 24-col viewport. In raw mode it does not wrap, so pressing End
+        // must slide the caret's line to keep the caret on screen (WP10 review fix) — not clip it away.
+        using var harness = MarkdownEditingHarness.Create(new string('x', 60) + "END", preset, columns: 24);
+
+        harness.Editor.ToggleViewMode(); // → Raw
+        harness.Settle();
+        Assert.Equal(ViewMode.Raw, harness.Editor.ViewMode);
+
+        harness.Key(Key.End);
+        harness.Settle();
+
+        Assert.True(harness.Host.FrameBuffer.CursorVisible);
+        Assert.InRange(harness.Host.FrameBuffer.CursorColumn, 0, 23); // slid into view, not off the right edge
+    }
+
+    [Theory]
+    [MemberData(nameof(Presets))]
+    public void Toggling_KeepsTheCaretOnScreen(string preset)
+    {
+        // A document taller than the 6-row viewport; put the caret on the last block, then toggle. The mode
+        // switch changes every block's height, so without a caret-follow the caret can be scrolled off; the
+        // toggle must EnsureVisible (WP10 review fix).
+        using var harness = MarkdownEditingHarness.Create(
+            "# One\n\npara two\n\npara three\n\npara four\n\n## LAST", preset, columns: 40, rows: 6);
+
+        harness.Caret.MoveDocumentEnd(extend: false); // caret onto the last block
+        harness.Settle();
+
+        harness.Editor.ToggleViewMode(); // → Raw (heights shrink: no wrap/reveal)
+        harness.Settle();
+
+        Assert.True(harness.Host.FrameBuffer.CursorVisible);
+        Assert.InRange(harness.Host.FrameBuffer.CursorRow, 0, 5); // still within the viewport after the switch
+    }
+
 }

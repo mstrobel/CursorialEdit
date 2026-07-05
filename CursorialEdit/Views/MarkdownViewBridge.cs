@@ -270,9 +270,12 @@ public sealed class MarkdownViewBridge : IEditorViewSource
             return 0;
 
         // Only the active LINE's row is slid; a hit-test on any other row of the same block gets no slide
-        // (else clicking a short earlier line would offset the caret by the active line's full slide).
+        // (else clicking a short earlier line would offset the caret by the active line's full slide). In
+        // raw mode the identity map has no "active row" flag, but raw is one row per source line, so the
+        // active row is simply the active line index.
         var map = presenter.MapForWidth(Math.Max(1, _wrapWidth));
-        return map.IsActiveRow(row) ? presenter.SlideOffset : 0;
+        bool activeRow = _viewMode == ViewMode.Raw ? row == presenter.ActiveLine : map.IsActiveRow(row);
+        return activeRow ? presenter.SlideOffset : 0;
     }
 
     /// <inheritdoc/>
@@ -290,10 +293,10 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     /// </summary>
     private void RevealActive()
     {
-        // Raw mode shows every mark literally — no reveal, no active-line slide, no active-block well.
-        if (_viewMode == ViewMode.Raw)
-            return;
-
+        // Raw mode shows every mark literally (BuildRaw ignores the active line) and paints no well
+        // (RawSourcePresenter overrides it away) — but it STILL honors the horizontal SLIDE below, so the
+        // caret's line scrolls to stay visible when a raw source line is wider than the viewport (a raw
+        // line does not wrap). So the active-line + slide computation runs in both modes.
         if (_caret is not { } caret || Blocks.Count == 0)
             return;
 

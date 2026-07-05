@@ -49,6 +49,7 @@ public sealed class RawSourcePresenter : LeafBlockPresenter
     protected override void RenderRows(RenderContext context, int width, int rows)
     {
         var foreground = TextElement.GetForeground(this) ?? Brushes.Default;
+        int activeRow = ActiveLine ?? -1;
 
         for (var row = 0; row < rows && row < Lines.Count; row++)
         {
@@ -56,12 +57,18 @@ public sealed class RawSourcePresenter : LeafBlockPresenter
             if (text.Length == 0)
                 continue;
 
+            // The caret's line is drawn horizontally slid so a source line wider than the viewport stays
+            // reachable (raw lines do not wrap); every other line draws from column 0. The negative origin
+            // scrolls the left of the active line off the render context's clip, mirroring the formatted
+            // active-row slide. Every other line draws from column 0.
+            int xOffset = row == activeRow ? -SlideOffset : 0;
+
             // Draw the literal source line, then overdraw the highlighted mark spans (same overdraw
             // discipline as CodeBlockPresenter: a running (char, cell) cursor, tokens in ascending order).
-            context.DrawText(0, row, text, foreground, null);
+            context.DrawText(xOffset, row, text, foreground, null);
 
             int prevChar = 0;
-            int prevCell = 0;
+            int prevCell = xOffset;
             foreach (var token in RawMarkdownHighlighter.Tokenize(text))
             {
                 if (token.Start < prevChar || token.Start >= text.Length || token.Length <= 0)

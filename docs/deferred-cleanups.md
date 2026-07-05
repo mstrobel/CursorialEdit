@@ -126,3 +126,14 @@ in **WP11 (caps + theme layer)**, which owns selection-tier rendering and the No
 - **`MarkdownEditingHarness` is a near-verbatim copy of `EditingHarness`** differing only in producer/bridge
   types; factor the shared driver. (Finding 7.)
 - **`PaintSelection` re-derives the valid-active-line guard `RenderRows` already computed.** (Finding 8.)
+
+## WP10 review — deferred cleanups (raw-path dedup, non-behavioral)
+
+- **RawMarkdownHighlighter re-implements markdown marker grammar** (list/quote/ATX/fence/thematic-break)
+  that RunMapBuilder + CodeBlockPresenter already own — and the copies already disagree. Unify onto one
+  grammar source. (Review finding 4.)
+- **RunMapBuilder.BuildRaw is a near-verbatim clone of Build's row-assembly body** (finding 5) and
+  **allocates full-length mark/content/style arrays that are always default** just to satisfy ClassifyLine
+  (finding 6). Parameterize the shared builder with a "raw/identity" mode instead of cloning.
+- **RawSourcePresenter.RenderRows re-implements the base row loop + CodeBlockPresenter's token-overdraw
+  cursor** (finding 7). Factor the shared overdraw helper.
