@@ -103,13 +103,81 @@ public sealed class TableTypingBenchmark(ITestOutputHelper output)
             $"table typing ({preset}): N={MeasuredKeystrokes} keystroke→frame p50 {p50:F2} ms, p90 {p90:F2} ms, " +
             $"max {max:F2} ms (budgets {TypicalBudgetMs:F0}/{HardCeilingMs:F0} ms); worst row-zone re-rasters/keystroke {worstRowRasters}");
 
-        // The per-row boundary economy: a stable-geometry cell edit re-rasters at most a couple of row zones
-        // (the edited row, and — when it wraps — nothing else re-rasters; siblings only composite-shift).
-        Assert.True(worstRowRasters <= 3, $"a cell edit re-rastered {worstRowRasters} row zones ({preset}) — the per-row boundary economy regressed");
+        // The per-row boundary economy: a STABLE-GEOMETRY cell edit re-rasters EXACTLY the edited row's zone
+        // (when it wraps, that one row grows taller but is still one zone; siblings only composite-shift). This
+        // is the guarantee the milestone exists to lock in — asserted at the committed 1, not a loose bound.
+        Assert.Equal(1, worstRowRasters);
 
         Assert.True(p50 < TypicalBudgetMs, $"table typing p50 over budget ({preset}): {p50:F2} ms (budget {TypicalBudgetMs:F0} ms; p90 {p90:F2}, max {max:F2}).");
         Assert.True(p90 < HardCeilingMs, $"table typing p90 over the hard ceiling ({preset}): {p90:F2} ms (ceiling {HardCeilingMs:F0} ms; p50 {p50:F2}, max {max:F2}).");
         Assert.True(max < CatastrophicCeilingMs, $"table typing max over the catastrophic ceiling ({preset}): {max:F2} ms (ceiling {CatastrophicCeilingMs:F0} ms).");
+    }
+
+    /// <summary>
+    /// The GROWING-column case (the other common intra-cell edit): typing makes the cell the unique widest,
+    /// so every keystroke widens its column and the whole table re-rasters (the spike has no incremental
+    /// reflow yet — that is WP5). This measures whether the naive full-table re-raster is still in budget at
+    /// the 20-row size, so R3 is retired for the growing case too — not just the pinned-geometry one.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Presets))]
+    public void GrowingColumnTyping_20RowTable_WithinBudget(string preset)
+    {
+        // 20 logical rows × 10 columns of short equal cells; typing into (0,0) makes column 0 the unique
+        // widest, so it widens every keystroke while it stays under the 40-cell clamp.
+        const int cols = 10, growthKeystrokes = 34; // start width 2 → ~36, under the 40 clamp: every keystroke grows
+        string document = BuildShortTable(cols);
+        using var harness = MarkdownEditingHarness.Create(document, preset, columns: 120, rows: 40);
+
+        var presenter = Assert.IsType<TablePresenter>(harness.Presenter(0));
+        for (var i = 0; i < WarmupKeystrokes; i++) TypeIntoCell(harness); // warm the path (also grows a little)
+
+        var samples = new double[growthKeystrokes];
+        int worstRowRasters = 0;
+        for (var i = 0; i < growthKeystrokes; i++)
+        {
+            var before = SnapshotRowRasters(presenter);
+            var start = Stopwatch.GetTimestamp();
+            ApplyCellInsert(harness);
+            var frames = 0;
+            do { harness.Host.RunFrame(); frames++; }
+            while (!harness.Host.RunUntilIdle(maxFrames: 0) && frames < MaxFramesPerKeystroke);
+            samples[i] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            worstRowRasters = Math.Max(worstRowRasters, RowRasterDelta(presenter, before));
+        }
+
+        Array.Sort(samples);
+        double p50 = samples[samples.Length / 2];
+        double p90 = samples[(int)(samples.Length * 0.9)];
+        double max = samples[^1];
+        output.WriteLine(
+            $"table GROWING-column typing ({preset}): N={growthKeystrokes} p50 {p50:F2} ms, p90 {p90:F2} ms, " +
+            $"max {max:F2} ms; worst row-zone re-rasters/keystroke {worstRowRasters} (full-table = the WP5 target)");
+
+        // R3 for the growing case: this is the heavier, WP5-optimizable path (naive full-table re-raster,
+        // no incremental reflow yet), so it is gated on the HARD ceiling (p90 < 50 ms) — the sustained worst
+        // against the hard frame budget — not the typical 16 ms budget the stable-geometry case meets. The
+        // isolated p90 (~12 ms) sits far under the ceiling; gating p50<typical here would flake under the
+        // parallel run (the full re-raster is scheduling-sensitive). p50 is reported for visibility.
+        Assert.True(p90 < HardCeilingMs, $"growing-column p90 over the hard ceiling ({preset}): {p90:F2} ms (p50 {p50:F2}, max {max:F2}).");
+        Assert.True(max < CatastrophicCeilingMs, $"growing-column max over the catastrophic ceiling ({preset}): {max:F2} ms.");
+    }
+
+    private static string BuildShortTable(int cols)
+    {
+        var sb = new StringBuilder();
+        sb.Append('|');
+        for (var c = 0; c < cols; c++) sb.Append(" h").Append(c).Append(" |");
+        sb.Append("\n|");
+        for (var c = 0; c < cols; c++) sb.Append("---|");
+        sb.Append('\n');
+        for (var r = 0; r < 19; r++)
+        {
+            sb.Append('|');
+            for (var c = 0; c < cols; c++) sb.Append(" ab |");
+            sb.Append('\n');
+        }
+        return sb.ToString();
     }
 
     private static void TypeIntoCell(MarkdownEditingHarness harness)

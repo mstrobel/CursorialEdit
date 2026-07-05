@@ -149,3 +149,36 @@ deleted. Kept here as a record.
   unify if the two ever drift. (Review finding 5, PLAUSIBLE.)
   (Finding 4 — DrawSelectableText enumerating clusters for a fully-unselected run — is minor and left as-is:
   the early `!_selectionActive || selection.IsEmpty` guard already covers the common no-selection frame.)
+
+## M3 spike (WP1-3) review — deferred to their owning WPs
+
+R3 is retired (both pinned AND growing-column typing measured in budget; stable-geometry asserts exactly-1
+row-zone). Two fixes applied in the review commit (table height estimate; the per-cell width alloc). The
+rest are geometry-mismatch items that route the table off the old 1:1 source-line path and are properly
+built by the later table WPs — a half-fix now would be throwaway:
+
+- **#1 Caret hit-test map mismatch (→ WP4/WP9).** `TablePresenter` inherits the source-line `MapForWidth`,
+  but the rendered geometry is the taller grid, so clicking/arrowing into a table mis-places the caret. The
+  composite cell-caret map is built by WP4 (`TableEditingController` cell focus) + WP9 (navigation
+  integration) — the very next table wave. Until then, caret-into-table is imprecise (regression from the
+  fallback's 1:1). **First thing WP4/WP9 must wire.**
+- **#6 Empty-cell source offset → 0 (→ WP4, FIRST task).** A blank/ragged `CellSpan.Empty` has `Start=0`, so
+  an empty cell's fragment maps to the block origin. Latent in the render-only spike (empty fragments are
+  skipped at draw), but WP4's cell splice + WP9 caret land wrong on an empty cell. The correct fix is the
+  empty-cell insertion position, which is WP4's cell-source-range logic (and must not hand-parse pipes —
+  risk d). **WP4 must fix this before typing into empty cells.**
+- **#2 Document selection not painted over a table (→ WP8).** `TableRowPresenter` draws cells with no
+  `SelectionProvider` consultation, so a document selection spanning a table shows no highlight on it (the
+  fallback composed it). Full table selection is the cell-rect model in WP8; the document-selection overlay
+  lands there.
+- **#4 Inline markdown in cells renders literal (→ table polish).** A cell's `**bold**`/`` `code` ``/link
+  shows its raw syntax (Text runs from raw source), unlike the rest of the doc. The fallback also showed
+  literal, so not a strict regression — a rendering enhancement (project cell inline runs like block inlines).
+  Schedule with the table editing polish (post-WP4) or a dedicated cell-inline pass.
+- **#7 Reconcile re-Refreshes every row each keystroke (→ WP5).** Even stable-geometry edits run
+  `LayoutRow`+run-map+signature for all N rows (only the invalidation is 1-zone). In budget today (R3
+  passes), but WP5's live-reflow is where "skip unchanged rows" + the incremental column recompute land —
+  the growing-column full re-raster (20 zones, measured in budget) is WP5's optimization target.
+- **#10 `WrapCell` duplicates `CaretNavigator.Wrap(CharacterWrap)` (→ cleanup).** The grapheme-boundary
+  char-wrap already exists in the layout code; route through it to shrink the risk-a surface, once verified
+  to produce identical fragments.

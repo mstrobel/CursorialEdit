@@ -140,10 +140,17 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     /// <inheritdoc/>
     public int GetBlockHeight(int index)
     {
-        // A realized presenter reports the exact height it drew; an unrealized block estimates by line
-        // count (refined the instant its presenter measures — MeasuredCallback → RefreshHeight).
+        // A realized presenter reports the exact height it drew; an unrealized block estimates (refined the
+        // instant its presenter measures — MeasuredCallback → RefreshHeight).
         var block = Blocks[index];
-        return _heights.TryGetValue(block.Id, out var height) ? height : block.LineCount;
+        if (_heights.TryGetValue(block.Id, out var height))
+            return height;
+
+        // A table renders as a taller box-drawing GRID, not one row per source line: ~1 top border +
+        // (content + separator) per logical row. Estimate 2·LineCount − 1 so the scroll extent is close
+        // before the table realizes (a plain LineCount estimate is systematically short → a visible scroll
+        // jump when it scrolls into view); wrapping is corrected exactly on realize.
+        return block.Kind == BlockKind.Table ? Math.Max(1, 2 * block.LineCount - 1) : block.LineCount;
     }
 
     /// <inheritdoc/>

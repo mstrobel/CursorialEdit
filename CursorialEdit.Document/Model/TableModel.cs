@@ -300,8 +300,20 @@ public sealed class TableModel
 
     private static int ContentWidth(string source, CellSpan span)
     {
-        var (_, text) = ContentOf(source, span);
-        return GraphemeWidth.StringWidth(text);
+        // Measure over the trimmed slice directly — no discarded substring allocation on the width pass
+        // (this runs per cell on every reflow/keystroke).
+        if (span.IsEmpty)
+            return 0;
+
+        var slice = source.AsSpan(span.Start, span.Length);
+        int lead = 0;
+        while (lead < slice.Length && (slice[lead] == ' ' || slice[lead] == '\t'))
+            lead++;
+        int tail = slice.Length;
+        while (tail > lead && (slice[tail - 1] == ' ' || slice[tail - 1] == '\t'))
+            tail--;
+
+        return GraphemeWidth.StringWidth(slice[lead..tail]);
     }
 
     // ───────────────────────────── content + wrapping ─────────────────────────────
