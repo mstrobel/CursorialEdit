@@ -94,6 +94,10 @@ public sealed class BlockViewBridge : IEditorViewSource, IBlockRunMapSource, ISe
     public ICaretMap GetCaretMap(int blockIndex) => GetRunMap(Blocks[blockIndex].Id, _wrapWidth);
 
     /// <inheritdoc/>
+    /// <remarks>The plain-text surface has no tables (every block is verbatim text) — always <see langword="null"/>.</remarks>
+    public TableModel? GetTableModel(int blockIndex) => null;
+
+    /// <inheritdoc/>
     /// <remarks>The plain surface never slides a line (no reveal), so the published caret cell is unadjusted.</remarks>
     public int ActiveSlide(int blockIndex, int row) => 0;
 

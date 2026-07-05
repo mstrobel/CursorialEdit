@@ -101,6 +101,71 @@ public sealed class TableModel
     /// <summary>The trimmed visible content of the cell at (<paramref name="row"/>, <paramref name="column"/>) — leading/trailing spaces and tabs removed, as GFM renders it.</summary>
     public string CellContent(int row, int column) => Content(_rows[row].Cells[column]).Text;
 
+    /// <summary>Whether the cell at (<paramref name="row"/>, <paramref name="column"/>) has no content (a GFM blank or ragged-padding cell) — it still carries a real inter-pipe insertion anchor (M3.WP4 point 0).</summary>
+    public bool IsCellEmpty(int row, int column) => _rows[row].Cells[column].IsEmpty;
+
+    /// <summary>
+    /// The block-relative source range <c>[Start, End)</c> of the trimmed <b>content</b> of the cell at
+    /// (<paramref name="row"/>, <paramref name="column"/>) — the caret's home range within the cell
+    /// (M3.WP4). For an empty cell this is the zero-width inter-pipe insertion anchor <c>(anchor, anchor)</c>.
+    /// </summary>
+    public (int Start, int End) CellContentRange(int row, int column)
+    {
+        var (start, text) = Content(_rows[row].Cells[column]);
+        return (start, start + text.Length);
+    }
+
+    /// <summary>The block-relative offset where a caret entering the cell at (<paramref name="row"/>, <paramref name="column"/>) lands — its content start (M3.WP4 Tab/arrow entry).</summary>
+    public int CellEntryOffset(int row, int column) => CellContentRange(row, column).Start;
+
+    /// <summary>
+    /// The logical (row, column) whose cell owns the block-relative <paramref name="blockRelOffset"/> — the
+    /// cell whose source begins at or before the offset (its trailing padding rounds back into it), or
+    /// <see langword="null"/> when the table has no cells. The Decision-4 cell-focus derivation: cell focus
+    /// is not stored, it is re-derived from the caret's source offset against the current model.
+    /// </summary>
+    public (int Row, int Column)? CellOfOffset(int blockRelOffset)
+    {
+        (int Row, int Column)? best = null;
+        int bestStart = int.MinValue;
+        for (var r = 0; r < _rows.Length; r++)
+        {
+            var cells = _rows[r].Cells;
+            for (var c = 0; c < cells.Length; c++)
+            {
+                int start = cells[c].IsEmpty ? cells[c].Start : Content(cells[c]).SrcStart;
+                if (start <= blockRelOffset && start >= bestStart)
+                {
+                    bestStart = start;
+                    best = (r, c);
+                }
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>The block-relative offset at the end of logical <paramref name="row"/>'s source line text (terminator excluded) — where a new row's break is spliced (M3.WP4 Tab-appends-row).</summary>
+    public int RowTextEndOffset(int row)
+    {
+        // Any known in-row offset (a cell start, real or empty anchor) locates the row's line; walk to its end.
+        int probe = 0;
+        foreach (var cell in _rows[row].Cells)
+        {
+            if (cell.Start > 0 || !cell.IsEmpty)
+            {
+                probe = cell.Start;
+                break;
+            }
+        }
+
+        int end = Math.Clamp(probe, 0, _source.Length);
+        while (end < _source.Length && _source[end] != '\n' && _source[end] != '\r')
+            end++;
+
+        return end;
+    }
+
     /// <summary>
     /// The cell-layout pass for logical <paramref name="row"/> under <paramref name="overflow"/> (M3 risk a):
     /// the ordered list of visual rows the row occupies, each carrying one <see cref="CellFragment"/> per
@@ -167,7 +232,7 @@ public sealed class TableModel
         // ragged table's excess column is represented (Markdig already normalises rows, but be defensive).
         var rowSpans = new List<CellSpan[]>();
         var headerFlags = new List<bool>();
-        var rowStartOffsets = new List<int>();
+        var rowCellCounts = new List<int>(); // Markdig's own cell count per row (before ragged padding)
         int columnCount = table.ColumnDefinitions.Count;
 
         foreach (var rowObj in table)
@@ -185,7 +250,7 @@ public sealed class TableModel
             columnCount = Math.Max(columnCount, cells.Count);
             rowSpans.Add([.. cells]);
             headerFlags.Add(mdRow.IsHeader);
-            rowStartOffsets.Add(RowStartOffset(mdRow, cells, origin, sourceLength));
+            rowCellCounts.Add(cells.Count);
         }
 
         columnCount = Math.Max(columnCount, 1);
@@ -203,6 +268,25 @@ public sealed class TableModel
             }
         }
 
+        // Row source lines are a GFM structural invariant: line 0 is the header, line 1 the delimiter, and
+        // body row i (i ≥ 1) is line i + 1. This holds even for an all-empty row (e.g. a just-appended
+        // `|   |   |`), whose Markdig row span is empty and so cannot be located from its cells (M3.WP4).
+        var lineStarts = LineStartOffsets(blockSource);
+        var rowLines = new int[rowSpans.Count];
+        for (var i = 0; i < rowSpans.Count; i++)
+            rowLines[i] = i == 0 ? 0 : i + 1;
+
+        // Spike review #6 / M3.WP4 point 0: give every empty cell a real inter-pipe *insertion anchor*
+        // (Start), not the block origin. An empty cell's <see cref="CellSpan"/> keeps IsEmpty (Length 0),
+        // but its Start now locates the cell so a caret lands in it and an edit splices there — derived
+        // from Markdig's surrounding-cell spans (never a hand pipe-scanner over the whole row: the gap
+        // between two Markdig cell spans is whitespace + pipes only, so scanning IT for '|' is escape-safe).
+        for (var i = 0; i < rowSpans.Count; i++)
+        {
+            int lineStart = lineStarts[Math.Clamp(rowLines[i], 0, lineStarts.Length - 1)];
+            AssignEmptyCellAnchors(blockSource, rowSpans[i], rowCellCounts[i], lineStart);
+        }
+
         // Column alignment from the delimiter row; a ragged-excess column has none.
         var columns = new Column[columnCount];
         for (var c = 0; c < columnCount; c++)
@@ -211,14 +295,9 @@ public sealed class TableModel
             columns[c] = MeasureColumn(blockSource, rowSpans, c, align);
         }
 
-        // Row source lines: count line terminators up to each row's block-relative start (self-contained;
-        // the delimiter line is naturally skipped because no row starts on it).
         var rows = new Row[rowSpans.Count];
         for (var i = 0; i < rowSpans.Count; i++)
-        {
-            int line = SourceLineAt(blockSource, rowStartOffsets[i]);
-            rows[i] = new Row(rowSpans[i], headerFlags[i], line);
-        }
+            rows[i] = new Row(rowSpans[i], headerFlags[i], rowLines[i]);
 
         return new TableModel(blockSource, columns, rows);
     }
@@ -241,36 +320,88 @@ public sealed class TableModel
         return new CellSpan(start, length);
     }
 
-    private static int RowStartOffset(MdTableRow mdRow, List<CellSpan> cells, int origin, int sourceLength)
+    /// <summary>The block-relative offset each source line begins at (<c>0</c>, then every position after a <c>'\n'</c>).</summary>
+    private static int[] LineStartOffsets(string source)
     {
-        // Prefer the row's own precise span; fall back to its first non-empty cell (an all-empty row keeps 0).
-        if (!mdRow.Span.IsEmpty && mdRow.Span.Length > 0)
-        {
-            int start = mdRow.Span.Start - origin;
-            if (start >= 0 && start <= sourceLength)
-                return start;
-        }
-
-        foreach (var cell in cells)
-        {
-            if (!cell.IsEmpty)
-                return cell.Start;
-        }
-
-        return 0;
-    }
-
-    private static int SourceLineAt(string source, int offset)
-    {
-        int line = 0;
-        int end = Math.Min(offset, source.Length);
-        for (var i = 0; i < end; i++)
+        var starts = new List<int> { 0 };
+        for (var i = 0; i < source.Length; i++)
         {
             if (source[i] == '\n')
-                line++;
+                starts.Add(i + 1);
         }
 
-        return line;
+        return [.. starts];
+    }
+
+    /// <summary>
+    /// Replaces every empty cell's <see cref="CellSpan.Empty"/> (<c>Start = 0</c>) with a zero-length span
+    /// whose <see cref="CellSpan.Start"/> is the cell's real inter-pipe insertion anchor (M3.WP4 point 0).
+    /// The anchor is bracketed by the row's surrounding <b>non-empty</b> Markdig cell spans (or the line
+    /// bounds), and — for a run of consecutive empty cells — the pipes are read from the bracketed gap,
+    /// which Markdig has already proven to be whitespace + <c>|</c> only (no escaped/backtick pipes hide in
+    /// an empty cell), so this never hand-parses cell boundaries out of arbitrary source (risk d).
+    /// </summary>
+    private static void AssignEmptyCellAnchors(string source, CellSpan[] cells, int markdigCellCount, int lineStart)
+    {
+        lineStart = Math.Clamp(lineStart, 0, source.Length);
+        int lineEnd = lineStart;
+        while (lineEnd < source.Length && source[lineEnd] != '\n' && source[lineEnd] != '\r')
+            lineEnd++;
+
+        for (var c = 0; c < cells.Length; c++)
+        {
+            if (!cells[c].IsEmpty)
+                continue;
+
+            // A ragged-padding cell (beyond Markdig's own cells) has no source region at all — anchor it at
+            // the row's text end so a caret at least lands on the row, not the block origin.
+            if (c >= markdigCellCount)
+            {
+                cells[c] = new CellSpan(lineEnd, 0);
+                continue;
+            }
+
+            // Bracket this cell's run of consecutive empty in-source cells by the nearest real spans.
+            int runStart = c;
+            while (runStart > 0 && cells[runStart - 1].IsEmpty && runStart - 1 < markdigCellCount)
+                runStart--;
+
+            int leftBound = runStart > 0 ? cells[runStart - 1].Start + cells[runStart - 1].Length : lineStart;
+
+            int runEnd = c;
+            while (runEnd + 1 < markdigCellCount && cells[runEnd + 1].IsEmpty)
+                runEnd++;
+
+            int rightBound = runEnd + 1 < markdigCellCount ? cells[runEnd + 1].Start : lineEnd;
+
+            cells[c] = new CellSpan(AnchorInGap(source, leftBound, rightBound, c - runStart), 0);
+        }
+    }
+
+    /// <summary>
+    /// The insertion anchor for the <paramref name="runIndex"/>-th empty cell in the whitespace+pipe gap
+    /// <c>[left, right)</c>: the offset just inside the pipe that opens that cell's inter-pipe region.
+    /// </summary>
+    private static int AnchorInGap(string source, int left, int right, int runIndex)
+    {
+        left = Math.Clamp(left, 0, source.Length);
+        right = Math.Clamp(right, left, source.Length);
+
+        // The pipes partitioning the gap (safe to scan: an empty cell holds only whitespace, never an
+        // escaped or backtick-guarded pipe). Cell j sits after pipe j.
+        var pipes = new List<int>();
+        for (var i = left; i < right; i++)
+        {
+            if (source[i] == '|')
+                pipes.Add(i);
+        }
+
+        if (runIndex < pipes.Count)
+            return Math.Min(pipes[runIndex] + 1, right); // just inside the opening pipe of this cell
+
+        // No pipe found (a leading/trailing region without a bar, e.g. a pipeless GFM table): anchor at the
+        // gap start, clamped past a single leading pad space so a bare insert lands inside the region.
+        return Math.Clamp(left, 0, right);
     }
 
     // ───────────────────────────── width cache ─────────────────────────────

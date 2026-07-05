@@ -40,8 +40,16 @@ public interface IEditorViewSource : IBlockViewSource
     /// <summary>Creates (and registers) the presenter for the block at <paramref name="index"/> — the panel's block factory.</summary>
     UIElement CreatePresenter(int index);
 
-    /// <summary>The caret map for the block at <paramref name="blockIndex"/> (the active block's map is reveal-aware).</summary>
+    /// <summary>The caret map for the block at <paramref name="blockIndex"/> (the active block's map is reveal-aware; a table block's map is its cell-landing <c>TableCaretMap</c>).</summary>
     ICaretMap GetCaretMap(int blockIndex);
+
+    /// <summary>
+    /// The <see cref="TableModel"/> of the block at <paramref name="blockIndex"/> when it is a table
+    /// (M3.WP4 cell-editing context), or <see langword="null"/> otherwise — the seam
+    /// <see cref="DocumentCaret"/> routes table editing/navigation through. The plain-text surface always
+    /// returns <see langword="null"/>.
+    /// </summary>
+    TableModel? GetTableModel(int blockIndex);
 
     /// <summary>
     /// The horizontal slide applied to the active block's revealed line (cells) at <paramref name="row"/> —

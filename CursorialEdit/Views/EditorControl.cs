@@ -449,8 +449,18 @@ public class EditorControl : Control, IContentRowMap
                     return; // empty store — bubbles
                 break;
 
-            case Key.Tab when !ctrl && !shift: // Shift+Tab stays free for M4 outdent
-                caret.InsertIndent();
+            case Key.Tab when !ctrl && !shift:
+                // In a table Tab navigates cells (last-cell Tab appends a row); elsewhere it indents (§6.3).
+                if (caret.IsInTable)
+                    caret.TableTab(shift: false);
+                else
+                    caret.InsertIndent();
+                break;
+
+            case Key.Tab when !ctrl && shift: // Shift+Tab: previous cell in a table; otherwise free for M4 outdent
+                if (!caret.IsInTable)
+                    return; // bubble — the plain surface has no Shift+Tab binding yet
+                caret.TableTab(shift: true);
                 break;
 
             case Key.Character when ctrl && !shift && IsLetter(e, 'a'):

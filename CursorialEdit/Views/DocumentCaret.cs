@@ -63,6 +63,7 @@ internal sealed class DocumentCaret : ISelectionSource
     private readonly EditController _controller;
     private readonly IEditorViewSource _host;
     private readonly IContentRowMap _rows;
+    private readonly TableEditingController _table;
 
     private TextPosition _position;
     private TextPosition? _anchor;
@@ -93,6 +94,7 @@ internal sealed class DocumentCaret : ISelectionSource
         _buffer = controller.Buffer;
         _host = host;
         _rows = rows;
+        _table = new TableEditingController(_buffer);
     }
 
     /// <summary>Raised after every caret/selection state change — the owner re-publishes the terminal caret and scroll-follows.</summary>
@@ -527,11 +529,29 @@ internal sealed class DocumentCaret : ISelectionSource
 
     // ───────────────────────────── editing ─────────────────────────────
 
-    /// <summary>Printable input: inserts at the caret, or replaces the selection (<see cref="EditKind.Typing"/>).</summary>
-    public void InsertText(string text) => ReplaceSelectionOrInsert(text, EditKind.Typing);
+    /// <summary>Printable input: inserts at the caret, or replaces the selection (<see cref="EditKind.Typing"/>). Inside a table cell it routes through <see cref="TableEditingController"/> (pipe escaping, empty-cell padding).</summary>
+    public void InsertText(string text)
+    {
+        if (!HasSelection && TryTableContext(out var model, out int blockStart))
+        {
+            RunTableCommand(_table.Type(model, blockStart, _position, text));
+            return;
+        }
 
-    /// <summary>Enter: a line break — always its own undo group (<see cref="EditKind.Newline"/>, §3.3).</summary>
-    public void InsertNewline() => ReplaceSelectionOrInsert("\n", EditKind.Newline);
+        ReplaceSelectionOrInsert(text, EditKind.Typing);
+    }
+
+    /// <summary>Enter: a line break — always its own undo group (<see cref="EditKind.Newline"/>, §3.3). Inside a table it commits downward (GFM cells are single-line, spec §5.4).</summary>
+    public void InsertNewline()
+    {
+        if (!HasSelection && TryTableContext(out var model, out int blockStart))
+        {
+            RunTableCommand(_table.Enter(model, blockStart, _position));
+            return;
+        }
+
+        ReplaceSelectionOrInsert("\n", EditKind.Newline);
+    }
 
     /// <summary>
     /// Tab: inserts the spec §6.3 indent (<see cref="IndentText"/> — stray tabs become spaces,
@@ -555,6 +575,12 @@ internal sealed class DocumentCaret : ISelectionSource
         if (HasSelection)
         {
             ReplaceSelectionOrInsert(string.Empty, EditKind.Typing);
+            return;
+        }
+
+        if (TryTableContext(out var model, out int blockStart))
+        {
+            RunTableCommand(_table.Backspace(model, blockStart, _position));
             return;
         }
 
@@ -583,6 +609,12 @@ internal sealed class DocumentCaret : ISelectionSource
         if (HasSelection)
         {
             ReplaceSelectionOrInsert(string.Empty, EditKind.Typing);
+            return;
+        }
+
+        if (TryTableContext(out var model, out int blockStart))
+        {
+            RunTableCommand(_table.DeleteForward(model, blockStart, _position));
             return;
         }
 
@@ -665,8 +697,113 @@ internal sealed class DocumentCaret : ISelectionSource
     {
         ArgumentNullException.ThrowIfNull(text);
 
-        if (text.Length > 0)
-            ReplaceSelectionOrInsert(text, EditKind.Paste);
+        if (text.Length == 0)
+            return;
+
+        if (!HasSelection && TryTableContext(out var model, out int blockStart))
+        {
+            RunTableCommand(_table.Paste(model, blockStart, _position, text));
+            return;
+        }
+
+        ReplaceSelectionOrInsert(text, EditKind.Paste);
+    }
+
+    // ───────────────────────────── table cell editing (M3.WP4) ─────────────────────────────
+
+    /// <summary>Whether the caret is currently inside a table block (the input layer routes Tab/Shift+Tab here).</summary>
+    public bool IsInTable => TryTableContext(out _, out _);
+
+    /// <summary>Tab / Shift+Tab inside a table: move to the next / previous cell (wrapping rows; last-cell Tab appends a row) — spec §5.3.</summary>
+    public void TableTab(bool shift)
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.Tab(model, blockStart, _position, shift));
+    }
+
+    /// <summary>Clears the caret's cell (spec §5.3 "Clear cell"); a no-op outside a table.</summary>
+    public void TableClearCell()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.ClearCell(model, blockStart, _position));
+    }
+
+    /// <summary>Inserts a <c>&lt;br&gt;</c> cell break at the caret (spec §5.4); a no-op outside a table.</summary>
+    public void TableInsertCellBreak()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.InsertCellBreak(model, blockStart, _position));
+    }
+
+    /// <summary>Resolves the caret's block to a live <see cref="TableModel"/> (Decision-4 cell focus is derived from the caret offset), or <see langword="false"/> when the caret is not in a table.</summary>
+    private bool TryTableContext(out TableModel model, out int blockStart)
+    {
+        model = null!;
+        blockStart = 0;
+        if (_buffer.LineCount == 0 || Blocks.Count == 0)
+            return false;
+
+        int blockIndex = Blocks.IndexOfLine(_position.Line);
+        if (_host.GetTableModel(blockIndex) is not { } table)
+            return false;
+
+        model = table;
+        blockStart = BlockStartOffset(blockIndex);
+        return true;
+    }
+
+    /// <summary>Applies a <see cref="TableCommand"/>: a splice (installing the controller-computed landing), a pure move, or an exit below the table.</summary>
+    private void RunTableCommand(TableCommand command)
+    {
+        if (command.IsNoOp)
+            return;
+
+        if (command.ExitsBelow)
+        {
+            MoveCaretBelowTable();
+            return;
+        }
+
+        if (command.Edit is not { } edit)
+        {
+            MoveTo(command.Caret, extend: false, endAffinity: false); // pure navigation — seals the group
+            return;
+        }
+
+        if (command.Seal)
+            _controller.SealGroup();
+
+        var before = State;
+        var after = new CaretState(command.Caret);
+        _controller.Apply(edit, command.Kind, before, after);
+
+        // The controller computed the intended landing (which may differ from the raw splice end — e.g. the
+        // appended row lands in its first cell, not after the inserted text), so install it directly.
+        _position = command.Caret;
+        _anchor = null;
+        _endAffinity = false;
+        _goalCell = -1;
+
+        if (command.Seal)
+            _controller.SealGroup();
+
+        _controller.NotifyCaretMoved(State);
+        AfterStateChange();
+    }
+
+    /// <summary>Moves the caret out of the table below it (Enter on the last row): the start of the next block, or the document end when the table is last.</summary>
+    private void MoveCaretBelowTable()
+    {
+        int blockIndex = Blocks.IndexOfLine(_position.Line);
+        int nextBlock = blockIndex + 1;
+        if (nextBlock < Blocks.Count)
+        {
+            MoveTo(new TextPosition(Blocks.GetStartLine(nextBlock), 0), extend: false, endAffinity: false);
+            return;
+        }
+
+        int line = _buffer.LineCount - 1;
+        MoveTo(new TextPosition(line, _buffer.GetLine(line).Text.Length), extend: false, endAffinity: false);
     }
 
     // ───────────────────────────── ISelectionSource ─────────────────────────────

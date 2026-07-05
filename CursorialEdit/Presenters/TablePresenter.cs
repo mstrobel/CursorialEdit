@@ -4,6 +4,7 @@ using Cursorial.UI;
 
 using CursorialEdit.Document.Buffer;
 using CursorialEdit.Document.Model;
+using CursorialEdit.Layout;
 
 namespace CursorialEdit.Presenters;
 
@@ -33,6 +34,8 @@ public sealed class TablePresenter : LeafBlockPresenter
     private string _source;
     private int _height;
 
+    private TableCaretMap? _caretMap;
+
     private TableModel? _pendingModel;
     private string? _pendingSource;
 
@@ -54,6 +57,13 @@ public sealed class TablePresenter : LeafBlockPresenter
 
     /// <summary>The live table overlay (test observability).</summary>
     internal TableModel Model => _model;
+
+    /// <summary>
+    /// The composite caret map for this table (M3.WP4): maps a block-relative source offset to the grid
+    /// (row, cell) and back, so the document caret lands <b>inside a cell</b>. Rebuilt in lockstep with the
+    /// model/metrics on every reconcile; cached so repeated caret queries within a frame share one instance.
+    /// </summary>
+    public ICaretMap CaretMap() => _caretMap ??= TableCaretMap.Build(_model, _metrics, _source);
 
     /// <summary>The per-logical-row child presenters (test observability — the committed per-row render boundaries).</summary>
     internal IReadOnlyList<TableRowPresenter> Rows => _rows;
@@ -88,6 +98,7 @@ public sealed class TablePresenter : LeafBlockPresenter
         _model = model;
         _source = source;
         _metrics = TableGridMetrics.Build(model);
+        _caretMap = null; // the geometry/source moved — the next caret query rebuilds the map
 
         // A row-count / column-count change re-forms the child set; otherwise reconcile in place and
         // invalidate only what moved — a width/alignment change re-measures + re-rasters every row (borders

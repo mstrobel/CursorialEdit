@@ -325,7 +325,14 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     {
         var block = Blocks[blockIndex];
         if (_presenters.TryGetValue(block.Id, out var presenter))
+        {
+            // A table maps the caret INTO a cell through its composite grid map (M3.WP4), never through the
+            // raw source-line run map — so click/arrow land in the right cell (and in raw mode the whole
+            // surface is verbatim, so the table is a plain source block there).
+            if (presenter is TablePresenter table && _viewMode == ViewMode.Formatted)
+                return table.CaretMap();
             return presenter.MapForWidth(Math.Max(1, _wrapWidth));
+        }
 
         // The caret jumped to a block outside the realized band (Ctrl+End). Build its map directly —
         // the one place a caret query realizes a block off the render band. In raw mode that is the
@@ -333,9 +340,34 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         if (_viewMode == ViewMode.Raw)
             return RunMapBuilder.BuildRaw(BuildLines(blockIndex, block), Math.Max(1, _wrapWidth));
 
+        if (block.Kind == BlockKind.Table)
+        {
+            string tableSource = BlockSource(BuildLines(blockIndex, block));
+            if (TableModel.Build(block, tableSource) is { } offBandModel)
+                return TableCaretMap.Build(offBandModel, TableGridMetrics.Build(offBandModel), tableSource);
+        }
+
         return RunMapBuilder.Build(
             BuildLines(blockIndex, block), block.InlineRuns, block.Kind, block.HeadingLevel,
             Math.Max(1, _wrapWidth), WrapModeFor(block.Kind), activeLine: null);
+    }
+
+    /// <inheritdoc/>
+    public TableModel? GetTableModel(int blockIndex)
+    {
+        if (blockIndex < 0 || blockIndex >= Blocks.Count)
+            return null;
+
+        var block = Blocks[blockIndex];
+        if (block.Kind != BlockKind.Table)
+            return null;
+
+        // Prefer the realized presenter's live overlay (it already reflects the current reconcile); build one
+        // directly only for a table off the render band.
+        if (_presenters.TryGetValue(block.Id, out var presenter) && presenter is TablePresenter table)
+            return table.Model;
+
+        return TableModel.Build(block, BlockSource(BuildLines(blockIndex, block)));
     }
 
     /// <inheritdoc/>
@@ -343,6 +375,11 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     {
         var id = Blocks[blockIndex].Id;
         if (_activeBlockId != id || !_presenters.TryGetValue(id, out var presenter) || presenter.ActiveLine is null)
+            return 0;
+
+        // A table never slides horizontally — it lays out in whole cells and its caret map reports published
+        // cells directly (M3.WP4). So the caret's cell is never offset by an active-line slide inside a table.
+        if (presenter is TablePresenter)
             return 0;
 
         // Only the active LINE's row is slid; a hit-test on any other row of the same block gets no slide
@@ -400,6 +437,14 @@ public sealed class MarkdownViewBridge : IEditorViewSource
 
         if (!_presenters.TryGetValue(activeId, out var active))
             return; // active block is off the realized band — CreatePresenter reveals it when it realizes
+
+        // A table draws its own grid (no revealed source line, no slide): mark it active for the record but
+        // skip the run-map slide computation entirely — the caret map already lands the caret in the cell.
+        if (active is TablePresenter)
+        {
+            active.SetReveal(lineInBlock, 0);
+            return;
+        }
 
         // Wrap-reveal: the active line wraps within the viewport, so there is no horizontal slide — the caret
         // stays visible by ordinary vertical scroll-follow. Just reveal the line (height reflows via measure).
