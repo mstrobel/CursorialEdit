@@ -103,6 +103,21 @@ public sealed class RunMap
     /// <summary>Whether visual <paramref name="row"/> belongs to the active (revealed, slidable) line.</summary>
     public bool IsActiveRow(int row) => ActiveLine is { } line && LineOfRow(row) == line;
 
+    /// <summary>
+    /// The visual-row span a source <paramref name="line"/> occupies: its first visual row and the
+    /// number of rows it wrapped into. The presenter uses the <b>inactive</b> map's span to reserve an
+    /// active (un-wrapped, slid) line's freed rows as blank — height-invariance under reveal
+    /// (Decision 9 / §4.1): a line that wraps to N rows while hidden but renders as one slid row when
+    /// revealed keeps its N-row footprint, so revealing never shrinks the block and shifts siblings.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="line"/> is out of range.</exception>
+    public (int FirstRow, int RowCount) RowsOfLine(int line)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(line);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(line, _lineTextLen.Length);
+        return (_lineFirstRow[line], _lineFirstRow[line + 1] - _lineFirstRow[line]);
+    }
+
     /// <summary>The runs of visual <paramref name="row"/> in ascending cell order (zero-width hidden marks included).</summary>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="row"/> is out of range.</exception>
     public ReadOnlySpan<Run> RunsForRow(int row)
@@ -192,9 +207,9 @@ public sealed class RunMap
                 continue; // outside the window, or a straddle at a clip edge → blank padding
 
             int p = start - slideOffset;
-            cells[p] = new ClipCell(ClipCellKind.Head, cluster.Kind, cluster.SrcOffset);
+            cells[p] = new ClipCell(ClipCellKind.Head, cluster.Kind, cluster.SrcOffset) { Glyph = cluster.Glyph };
             if (cluster.Width == 2)
-                cells[p + 1] = new ClipCell(ClipCellKind.Tail, cluster.Kind, cluster.SrcOffset);
+                cells[p + 1] = new ClipCell(ClipCellKind.Tail, cluster.Kind, cluster.SrcOffset) { Glyph = cluster.Glyph };
         }
 
         // The less/vim idiom: the edge cells signal clipped content on that side, overwriting whatever
@@ -239,7 +254,11 @@ public sealed class RunMap
 }
 
 /// <summary>One rendered grapheme cluster of a visual row: its start cell, cell width, block-relative source offset, and run kind.</summary>
-internal readonly record struct RowCluster(int Cell, int Width, int SrcOffset, RunKind Kind);
+internal readonly record struct RowCluster(int Cell, int Width, int SrcOffset, RunKind Kind)
+{
+    /// <summary>The display glyph for a <see cref="RunKind.Synthetic"/> cluster (a bullet, quote bar, or <c>↵</c>) whose source slice is its marker, not its glyph; <see langword="null"/> when the cluster draws its source.</summary>
+    public string? Glyph { get; init; }
+}
 
 /// <summary>
 /// The binding caret-visibility invariant (M2.WP5): the horizontal slide offset for a row is
@@ -312,6 +331,9 @@ public enum ClipCellKind
 /// <param name="SrcOffset">The block-relative source offset for head/tail cells; −1 otherwise.</param>
 public readonly record struct ClipCell(ClipCellKind Kind, RunKind Run, int SrcOffset)
 {
+    /// <summary>The display glyph for a synthetic head/tail cell (a <c>↵</c> on the active line) whose source slice is not what draws; <see langword="null"/> when the cell draws its source grapheme.</summary>
+    public string? Glyph { get; init; }
+
     /// <summary>The glyph for the left continuation indicator (the less/vim idiom).</summary>
     public const char LeftGlyph = '❮';
 

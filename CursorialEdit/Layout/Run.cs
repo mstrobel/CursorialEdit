@@ -49,4 +49,56 @@ public enum RunKind
 /// <param name="Col">The run's first display cell, row-local (cell 0 is the block box's left edge).</param>
 /// <param name="Width">The run's display width in cells (whole-cell <see cref="Cursorial.Text.GraphemeWidth"/> measure).</param>
 /// <param name="Kind">How the cells relate to the source slice.</param>
-public readonly record struct Run(int SrcStart, int SrcLen, int Col, int Width, RunKind Kind);
+public readonly record struct Run(int SrcStart, int SrcLen, int Col, int Width, RunKind Kind)
+{
+    /// <summary>
+    /// The display glyph a <see cref="RunKind.Synthetic"/> run draws (a bullet <c>•</c>, a quote bar
+    /// <c>▌</c>, a hard-break <c>↵</c>, later a checkbox) — the substrate WP6 finding 1 flagged as the
+    /// blocker for quotes/lists: a synthetic run's <see cref="SrcStart"/>/<see cref="SrcLen"/> point at
+    /// its <b>marker source</b> (<c>"- "</c>, <c>"&gt; "</c>) for caret mapping, so the source slice is
+    /// <i>not</i> what should be drawn. The presenter draws this glyph instead. <see langword="null"/>
+    /// for <see cref="RunKind.Text"/>/<see cref="RunKind.HiddenMark"/>/<see cref="RunKind.RevealedMark"/>
+    /// runs, which draw (or hide) their source slice directly. Init-only and defaulted so the M1
+    /// <see cref="BlockRunMap"/> and every existing <c>new Run(…)</c> stay value-equal.
+    /// </summary>
+    public string? Glyph { get; init; }
+
+    /// <summary>
+    /// The inline formatting (bold/italic/strikethrough/code/link) that applies to a
+    /// <see cref="RunKind.Text"/>/<see cref="RunKind.RevealedMark"/> run's cells, derived from the
+    /// enclosing <see cref="Document.Model.InlineRun"/>s so the presenter renders emphasis/strong/
+    /// code/strikethrough/links formatted without re-deriving the inline AST (§2.1). Because a style
+    /// transition always coincides with a delimiter (a mark) or a run boundary, a content run's style
+    /// is uniform. <see cref="RunStyle.None"/> for plain text and for synthetic/hidden runs. Init-only
+    /// and defaulted so plain-text run maps stay value-equal to M1's.
+    /// </summary>
+    public RunStyle Style { get; init; }
+}
+
+/// <summary>
+/// The inline formatting flags a <see cref="Run"/> carries (§2.1) — the projection of the enclosing
+/// <see cref="Document.Model.InlineRunKind"/>s onto a content run, so a presenter maps each to a
+/// <see cref="Cursorial.Output.TextAttributes"/>/color without touching the inline AST. Combine with
+/// bitwise OR (nested strong+emphasis is <see cref="Bold"/> | <see cref="Italic"/>).
+/// </summary>
+[Flags]
+public enum RunStyle
+{
+    /// <summary>Plain text — no inline formatting.</summary>
+    None = 0,
+
+    /// <summary>Strong emphasis (<c>**…**</c>) → bold weight.</summary>
+    Bold = 1 << 0,
+
+    /// <summary>Emphasis (<c>*…*</c>) → italic/slant.</summary>
+    Italic = 1 << 1,
+
+    /// <summary>GFM strikethrough (<c>~~…~~</c>) → struck-through.</summary>
+    Strikethrough = 1 << 2,
+
+    /// <summary>Inline code (<c>`…`</c>) → code-fill background.</summary>
+    Code = 1 << 3,
+
+    /// <summary>A link or autolink → underlined link text (§7.1; <see cref="Cursorial.Rendering.StyleQuantizer"/> gates the underline per tier).</summary>
+    Link = 1 << 4,
+}

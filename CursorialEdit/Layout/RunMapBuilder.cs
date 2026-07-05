@@ -44,7 +44,9 @@ public static class RunMapBuilder
     }
 
     /// <summary>One classified span of a line rendered into the display string (or, for a hidden mark, into nothing).</summary>
-    private readonly record struct PieceRun(RunKind Kind, int SrcStart, int SrcLen, int DisplayStart, int DisplayLen);
+    private readonly record struct PieceRun(
+        RunKind Kind, int SrcStart, int SrcLen, int DisplayStart, int DisplayLen,
+        RunStyle Style = RunStyle.None, string? Glyph = null);
 
     /// <summary>
     /// Builds the run map for <paramref name="lines"/> (a block's source lines), classifying marks
@@ -86,7 +88,7 @@ public static class RunMapBuilder
 
         int sourceLength = lineSrcStart[lineCount];
         string blockText = BuildBlockText(lines, sourceLength);
-        var (mark, content) = ClassifyMarks(blockText, inlineRuns, kind, lineSrcStart, lineTextLen);
+        var (mark, content, style) = ClassifyMarks(blockText, inlineRuns, kind, lineSrcStart, lineTextLen);
 
         var wrapped = new WrappedLine[lineCount];
         var srcToDisplay = new int[lineCount][];
@@ -102,10 +104,13 @@ public static class RunMapBuilder
         {
             bool revealed = activeLine == i;
             var (marker, markerStart, markerLen) = ScanLeadingMarker(lines[i].Text, kind);
+            int hardBreakLen = kind == BlockKind.Paragraph && i < lineCount - 1
+                ? HardBreakMarkerLength(lines[i].Text)
+                : 0;
 
             var pieces = ClassifyLine(
-                lines[i].Text, lineSrcStart[i], mark, content,
-                marker, markerStart, markerLen, revealed,
+                lines[i].Text, lineSrcStart[i], mark, content, style,
+                marker, markerStart, markerLen, hardBreakLen, revealed,
                 out string display, out int[] toDisplay, out int[] toSrc);
 
             wrapped[i] = CaretNavigator.Wrap(display, wrapWidth, revealed ? WrapMode.NoWrap : wrapMode);
@@ -143,17 +148,21 @@ public static class RunMapBuilder
     // ───────────────────────────── mark classification ─────────────────────────────
 
     /// <summary>
-    /// Marks vs. content over the whole block source. Pass A flags every formatting-container and code
-    /// span as a candidate mark; pass B flags the visible-text leaves (and code interiors) as content,
-    /// which wins — so a container's delimiters (span minus children) and code's backtick fences remain
-    /// marks while nested content shows. The ATX heading prefix is folded in as a mark.
+    /// Marks vs. content (plus per-position inline <see cref="RunStyle"/>) over the whole block source.
+    /// Pass A flags every formatting-container and code span as a candidate mark; pass B flags the
+    /// visible-text leaves (and code interiors) as content, which wins — so a container's delimiters
+    /// (span minus children) and code's backtick fences remain marks while nested content shows. The
+    /// same two passes accumulate the style flags (<see cref="StyleOf"/>) over each inline span, so a
+    /// content position knows its enclosing emphasis/strong/code/strike/link. The ATX heading prefix
+    /// and a setext underline line are folded in as marks (hidden when inactive, revealed when active).
     /// </summary>
-    private static (bool[] Mark, bool[] Content) ClassifyMarks(
+    private static (bool[] Mark, bool[] Content, RunStyle[] Style) ClassifyMarks(
         string blockText, IReadOnlyList<InlineRun> inlineRuns, BlockKind kind, int[] lineSrcStart, int[] lineTextLen)
     {
         int n = blockText.Length;
         var mark = new bool[n];
         var content = new bool[n];
+        var style = new RunStyle[n];
 
         foreach (var run in inlineRuns)
         {
@@ -165,6 +174,11 @@ public static class RunMapBuilder
             if (IsContainer(run.Kind) || run.Kind == InlineRunKind.Code)
                 for (var i = s; i < e; i++)
                     mark[i] = true;
+
+            var flag = StyleOf(run.Kind);
+            if (flag != RunStyle.None)
+                for (var i = s; i < e; i++)
+                    style[i] |= flag;
         }
 
         foreach (var run in inlineRuns)
@@ -193,14 +207,85 @@ public static class RunMapBuilder
         }
 
         if (kind == BlockKind.Heading)
+        {
             MarkAtxPrefix(blockText, lineSrcStart[0], lineTextLen[0], mark, content);
+            MarkSetextUnderline(blockText, lineSrcStart, lineTextLen, mark, content);
+        }
 
-        return (mark, content);
+        return (mark, content, style);
     }
+
+    /// <summary>The inline formatting a run kind contributes to the content it encloses (§2.1).</summary>
+    private static RunStyle StyleOf(InlineRunKind kind) => kind switch
+    {
+        InlineRunKind.Strong => RunStyle.Bold,
+        InlineRunKind.Emphasis => RunStyle.Italic,
+        InlineRunKind.Strikethrough => RunStyle.Strikethrough,
+        InlineRunKind.Code => RunStyle.Code,
+        InlineRunKind.Link or InlineRunKind.AutoLink or InlineRunKind.Image => RunStyle.Link,
+        _ => RunStyle.None,
+    };
 
     private static bool IsContainer(InlineRunKind kind) => kind is
         InlineRunKind.Emphasis or InlineRunKind.Strong or InlineRunKind.Strikethrough
         or InlineRunKind.Link or InlineRunKind.Image;
+
+    /// <summary>
+    /// Marks a setext heading's underline line (the trailing all-<c>=</c> or all-<c>-</c> line of a
+    /// multi-line <see cref="BlockKind.Heading"/>) as a mark — hidden when inactive, revealed when
+    /// active — so the heading renders as H1/H2 text with the underline suppressed (§2.1 [DECISION]).
+    /// </summary>
+    private static void MarkSetextUnderline(string blockText, int[] lineSrcStart, int[] lineTextLen, bool[] mark, bool[] content)
+    {
+        for (var line = 1; line < lineTextLen.Length; line++)
+        {
+            int start = lineSrcStart[line];
+            int end = start + lineTextLen[line];
+            if (!IsSetextUnderline(blockText, start, end))
+                continue;
+
+            for (var i = start; i < end; i++)
+            {
+                mark[i] = true;
+                content[i] = false;
+            }
+        }
+    }
+
+    private static bool IsSetextUnderline(string blockText, int start, int end)
+    {
+        int p = start;
+        while (p < end && blockText[p] == ' ')
+            p++;
+        if (p >= end)
+            return false;
+
+        char c = blockText[p];
+        if (c != '=' && c != '-')
+            return false;
+
+        while (p < end && blockText[p] == c)
+            p++;
+        while (p < end && (blockText[p] == ' ' || blockText[p] == '\t'))
+            p++;
+        return p == end; // a run of one underline char, optional surrounding whitespace, nothing else
+    }
+
+    /// <summary>
+    /// The length of a line's trailing hard-line-break marker (§2.1): two-or-more trailing spaces, or a
+    /// single trailing backslash. <c>0</c> when the line has no hard break. Those marker cells hide when
+    /// inactive (spec: "rendered invisibly") and a <c>↵</c> affordance shows on the active line.
+    /// </summary>
+    private static int HardBreakMarkerLength(string text)
+    {
+        if (text.EndsWith('\\'))
+            return 1;
+
+        int spaces = 0;
+        for (int i = text.Length - 1; i >= 0 && text[i] == ' '; i--)
+            spaces++;
+        return spaces >= 2 ? spaces : 0;
+    }
 
     private static void MarkAtxPrefix(string blockText, int lineStart, int textLen, bool[] mark, bool[] content)
     {
@@ -246,9 +331,15 @@ public static class RunMapBuilder
         if (j >= text.Length || text[j] != '>')
             return (SegKind.Content, 0, 0);
 
-        int end = j + 1;
-        if (end < text.Length && text[end] == ' ')
+        // Consume every nested level (`> > `) so the ▌ bar renders one per depth (§2.1).
+        int end = j;
+        while (end < text.Length && text[end] == '>')
+        {
             end++;
+            if (end < text.Length && text[end] == ' ')
+                end++;
+        }
+
         return (SegKind.QuoteMarker, j, end - j);
     }
 
@@ -289,11 +380,12 @@ public static class RunMapBuilder
     // ───────────────────────────── per-line rendering ─────────────────────────────
 
     private static List<PieceRun> ClassifyLine(
-        string text, int lineStart, bool[] mark, bool[] content,
-        SegKind marker, int markerStart, int markerLen, bool revealed,
+        string text, int lineStart, bool[] mark, bool[] content, RunStyle[] style,
+        SegKind marker, int markerStart, int markerLen, int hardBreakLen, bool revealed,
         out string display, out int[] srcToDisplay, out int[] displayToSrc)
     {
         int textLen = text.Length;
+        int hardBreakStart = textLen - hardBreakLen; // where the trailing hard-break marker begins
         var pieces = new List<PieceRun>();
         var sb = new StringBuilder(textLen);
         var toDisplay = new int[textLen + 1];
@@ -303,8 +395,13 @@ public static class RunMapBuilder
         while (col < textLen)
         {
             SegKind seg = SegAt(col);
+            RunStyle segStyle = seg == SegKind.Content ? style[lineStart + col] : RunStyle.None;
+
+            // Group the run: same segment kind, and — for content — same inline style, so a style
+            // transition (a bare autolink inside plain text, no delimiter) starts a fresh run.
             int end = col + 1;
-            while (end < textLen && SegAt(end) == seg)
+            while (end < textLen && SegAt(end) == seg
+                && (seg != SegKind.Content || style[lineStart + end] == segStyle))
                 end++;
             int len = end - col;
             int srcStart = lineStart + col;
@@ -321,7 +418,7 @@ public static class RunMapBuilder
 
                 sb.Append(text, col, len);
                 var kind = seg == SegKind.Content ? RunKind.Text : RunKind.RevealedMark;
-                pieces.Add(new PieceRun(kind, srcStart, len, dispStart, len));
+                pieces.Add(new PieceRun(kind, srcStart, len, dispStart, len, Style: segStyle));
             }
             else if (seg == SegKind.Mark)
             {
@@ -339,10 +436,21 @@ public static class RunMapBuilder
                 for (var k = 0; k < glyph.Length; k++)
                     toSrc.Add(srcStart); // atomic: every glyph cell maps to the marker's single stop
                 sb.Append(glyph);
-                pieces.Add(new PieceRun(RunKind.Synthetic, srcStart, len, dispStart, glyph.Length));
+                pieces.Add(new PieceRun(RunKind.Synthetic, srcStart, len, dispStart, glyph.Length, Glyph: glyph));
             }
 
             col = end;
+        }
+
+        // On the active line a hard break shows a trailing ↵ affordance (§2.1) — a zero-source-length
+        // synthetic mapping to the line's text end, so it adds no caret stop.
+        if (revealed && hardBreakLen > 0 && hardBreakStart >= 0)
+        {
+            int dispStart = sb.Length;
+            sb.Append(HardBreakGlyph);
+            for (var k = 0; k < HardBreakGlyph.Length; k++)
+                toSrc.Add(lineStart + textLen);
+            pieces.Add(new PieceRun(RunKind.Synthetic, lineStart + textLen, 0, dispStart, HardBreakGlyph.Length, Glyph: HardBreakGlyph));
         }
 
         toDisplay[textLen] = sb.Length;
@@ -357,26 +465,50 @@ public static class RunMapBuilder
         {
             if (marker != SegKind.Content && c >= markerStart && c < markerStart + markerLen)
                 return marker;
+            // The trailing hard-break marker hides like any other syntax mark (spec: "invisibly").
+            if (hardBreakLen > 0 && c >= hardBreakStart)
+                return SegKind.Mark;
             int o = lineStart + c;
             return mark[o] && !content[o] ? SegKind.Mark : SegKind.Content;
         }
     }
 
+    /// <summary>The hard-line-break affordance shown on the active line (§2.1).</summary>
+    private const string HardBreakGlyph = "↵";
+
     private static string GlyphFor(SegKind seg, ReadOnlySpan<char> markerSrc)
     {
         int width = GraphemeWidth.StringWidth(markerSrc);
         if (seg == SegKind.QuoteMarker)
-            return Pad("▌", width); // ▌ quote bar
+            return Pad(QuoteBarGlyphs(markerSrc), width); // one ▌ per nesting level
 
         // Ordered markers keep their numerals (meaningful); unordered become a bullet glyph.
-        char first = markerSrc.Length > 0 ? markerSrc[0] : '-';
-        return char.IsAsciiDigit(first) ? markerSrc.ToString() : Pad("•", width); // • bullet
+        char first = FirstNonSpace(markerSrc);
+        return char.IsAsciiDigit(first) ? markerSrc.TrimStart().ToString() : Pad("•", width); // • bullet
 
         static string Pad(string glyph, int width)
         {
             int gw = GraphemeWidth.StringWidth(glyph);
             return gw >= width ? glyph : glyph + new string(' ', width - gw);
         }
+
+        static char FirstNonSpace(ReadOnlySpan<char> s)
+        {
+            foreach (char c in s)
+                if (c != ' ')
+                    return c;
+            return '-';
+        }
+    }
+
+    /// <summary>One <c>▌</c> bar per <c>&gt;</c> nesting level in a blockquote marker (<c>"&gt; &gt; "</c> → <c>▌▌</c>).</summary>
+    private static string QuoteBarGlyphs(ReadOnlySpan<char> markerSrc)
+    {
+        int levels = 0;
+        foreach (char c in markerSrc)
+            if (c == '>')
+                levels++;
+        return new string('▌', Math.Max(1, levels));
     }
 
     // ───────────────────────────── per-row assembly ─────────────────────────────
@@ -416,7 +548,7 @@ public static class RunMapBuilder
 
                 int scol = CellsBetween(display, a, ps);
                 int swidth = CellsBetween(display, ps, Math.Min(pe, b));
-                runs.Add(new Run(piece.SrcStart, piece.SrcLen, scol, swidth, RunKind.Synthetic));
+                runs.Add(new Run(piece.SrcStart, piece.SrcLen, scol, swidth, RunKind.Synthetic) { Glyph = piece.Glyph });
                 AppendClusters(display, ps, Math.Min(pe, b), scol, piece.SrcStart, atomic: true, RunKind.Synthetic, cells);
                 continue;
             }
@@ -429,7 +561,7 @@ public static class RunMapBuilder
             int col = CellsBetween(display, a, x);
             int width = CellsBetween(display, x, y);
             int runSrc = piece.SrcStart + (x - ps); // Text/RevealedMark: source is contiguous and 1:1 with display
-            runs.Add(new Run(runSrc, y - x, col, width, piece.Kind));
+            runs.Add(new Run(runSrc, y - x, col, width, piece.Kind) { Style = piece.Style });
             AppendClusters(display, x, y, col, runSrc, atomic: false, piece.Kind, cells);
         }
 
@@ -449,7 +581,10 @@ public static class RunMapBuilder
             var cluster = enumerator.Current;
             int width = GraphemeWidth.ClusterWidth(cluster);
             int src = atomic ? srcStart : srcStart + offset;
-            cells.Add(new RowCluster(cell, width, src, kind));
+            // A synthetic (atomic) cluster's source slice is its marker, not its glyph — carry the glyph
+            // so a synthetic on the active line (a ↵ hard break) draws its glyph, not the source char.
+            string? glyph = atomic ? cluster.ToString() : null;
+            cells.Add(new RowCluster(cell, width, src, kind) { Glyph = glyph });
             cell += width;
             offset += cluster.Length;
         }
