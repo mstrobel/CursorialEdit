@@ -79,3 +79,15 @@ span-oracle literal/HTML blind spot — were fixed in the review-fix commit; the
   Fix options: assert the hard ceiling on p99 (not max), warm more aggressively, or mark the benchmark
   `[Trait("Category","Benchmark")]` and run it serialized/excluded from the parallel default run (per
   §5.7 lanes). Not a product regression — a test-harness robustness item.
+
+## WP7a review — deferred cleanups (perf/dead-code, non-behavioral)
+
+- **`CodeBlockPresenter` re-tokenizes every code line on every Render** (no per-line memoization). On the
+  edit hot path a code block re-scans all its lines each frame. Cache tokenization per (line, text) —
+  invalidate on `SetContent`. (Review finding 6.)
+- **`RunMapBuilder.AppendClusters` allocates a per-cluster glyph string (`cluster.ToString()`) for every
+  atomic synthetic cluster**, but `RowCluster.Glyph` is only read on the active clipped row (where the
+  sole synthetic is the ↵). Inactive bullets/quote-bars allocate dead strings. Defer the glyph
+  materialization to the active-row path. (Review finding 8.)
+- **`RunMapBuilder.GlyphFor`'s `FirstNonSpace` helper + `markerSrc.TrimStart()` are dead** — the marker
+  slice always starts at a non-space. Remove the no-op defensiveness. (Review finding 9.)

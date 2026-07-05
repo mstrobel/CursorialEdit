@@ -125,12 +125,14 @@ public sealed class PresenterRenderTests
 
     [Theory]
     [MemberData(nameof(Presets))]
-    public void IndentedCode_RendersFilled_IndentStripped(string preset)
+    public void IndentedCode_RendersFilled_IndentPreserved(string preset)
     {
         using var harness = PresenterHarness.FromMarkdown("    indented code\n    line two", preset);
 
-        Assert.Equal("indented code", harness.RowTrimmed(0)); // the 4-space indent is stripped for display
-        Assert.Equal("line two", harness.RowTrimmed(1));
+        // The 4-space indent is drawn verbatim (real source the user edits) — this keeps the inactive
+        // and revealed rows column-aligned so the caret never jumps landing on a line (WP7a review fix).
+        Assert.Equal("    indented code", harness.Row(0).TrimEnd());
+        Assert.Equal("    line two", harness.Row(1).TrimEnd());
         Assert.Equal(Colors.LightBlack, harness.Cell(0, 0).Style.Background); // the code fill
     }
 

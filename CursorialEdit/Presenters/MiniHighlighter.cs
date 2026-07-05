@@ -160,11 +160,14 @@ internal static class MiniHighlighter
             // Strings.
             if (c == '"' || (c == '\'' && language is CodeLanguage.CSharp or CodeLanguage.Shell))
             {
+                // Backslash escapes a quote only in languages that use C-style escaping. XAML/XML (and
+                // Markdown) do not — a value ending in `\` there must NOT swallow its closing quote.
+                bool cStyleEscapes = language is CodeLanguage.CSharp or CodeLanguage.Json or CodeLanguage.Shell;
                 int start = i;
                 i++;
                 while (i < n && line[i] != c)
                 {
-                    if (line[i] == '\\' && i + 1 < n)
+                    if (cStyleEscapes && line[i] == '\\' && i + 1 < n)
                         i++;
                     i++;
                 }

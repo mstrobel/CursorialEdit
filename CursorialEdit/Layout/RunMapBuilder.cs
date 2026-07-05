@@ -278,8 +278,13 @@ public static class RunMapBuilder
     /// </summary>
     private static int HardBreakMarkerLength(string text)
     {
-        if (text.EndsWith('\\'))
-            return 1;
+        // A trailing backslash is a hard break only when UNESCAPED — i.e. an odd number of trailing
+        // backslashes (the last one stands alone). An even count is escaped pairs (a literal `\`), no break.
+        int backslashes = 0;
+        for (int i = text.Length - 1; i >= 0 && text[i] == '\\'; i--)
+            backslashes++;
+        if (backslashes > 0)
+            return backslashes % 2 == 1 ? 1 : 0;
 
         int spaces = 0;
         for (int i = text.Length - 1; i >= 0 && text[i] == ' '; i--)
@@ -442,18 +447,21 @@ public static class RunMapBuilder
             col = end;
         }
 
+        // The text-end display position — captured BEFORE any trailing ↵ affordance so the line-end
+        // caret maps to the cell just before the ↵ (`text  |↵`), not past it.
+        int textEndDisplay = sb.Length;
+
         // On the active line a hard break shows a trailing ↵ affordance (§2.1) — a zero-source-length
         // synthetic mapping to the line's text end, so it adds no caret stop.
         if (revealed && hardBreakLen > 0 && hardBreakStart >= 0)
         {
-            int dispStart = sb.Length;
             sb.Append(HardBreakGlyph);
             for (var k = 0; k < HardBreakGlyph.Length; k++)
                 toSrc.Add(lineStart + textLen);
-            pieces.Add(new PieceRun(RunKind.Synthetic, lineStart + textLen, 0, dispStart, HardBreakGlyph.Length, Glyph: HardBreakGlyph));
+            pieces.Add(new PieceRun(RunKind.Synthetic, lineStart + textLen, 0, textEndDisplay, HardBreakGlyph.Length, Glyph: HardBreakGlyph));
         }
 
-        toDisplay[textLen] = sb.Length;
+        toDisplay[textLen] = textEndDisplay;
         toSrc.Add(lineStart + textLen); // display end → the line's text end (the terminator boundary)
 
         display = sb.ToString();
