@@ -61,11 +61,17 @@ public sealed class RawSourcePresenter : LeafBlockPresenter
             // reachable (raw lines do not wrap); every other line draws from column 0. The negative origin
             // scrolls the left of the active line off the render context's clip, mirroring the formatted
             // active-row slide. Every other line draws from column 0.
-            int xOffset = row == activeRow ? -SlideOffset : 0;
+            int slide = row == activeRow ? SlideOffset : 0;
+            int xOffset = -slide;
+
+            // The selection is a source range; for a verbatim 1:1 line it maps to line-local cells, then
+            // slides into the viewport (WP11b) — so raw-mode selection composes into the draw exactly like
+            // the formatted path (NoColor → Inverse; no scrim).
+            var selection = SlideSelection(SelectedCellsForVerbatimLine(row), slide, width);
 
             // Draw the literal source line, then overdraw the highlighted mark spans (same overdraw
             // discipline as CodeBlockPresenter: a running (char, cell) cursor, tokens in ascending order).
-            context.DrawText(xOffset, row, text, foreground, null);
+            DrawSelectableText(context, xOffset, row, text, foreground, null, default, selection);
 
             int prevChar = 0;
             int prevCell = xOffset;
@@ -77,7 +83,7 @@ public sealed class RawSourcePresenter : LeafBlockPresenter
                 int length = Math.Min(token.Length, text.Length - token.Start);
                 prevCell += GraphemeWidth.StringWidth(text.AsSpan(prevChar, token.Start - prevChar));
                 prevChar = token.Start;
-                context.DrawText(prevCell, row, text.AsSpan(token.Start, length), MarkdownStyles.RawMarkBrush(this, token.Class), null);
+                DrawSelectableText(context, prevCell, row, text.AsSpan(token.Start, length), MarkdownStyles.RawMarkBrush(this, token.Class), null, default, selection);
             }
         }
     }

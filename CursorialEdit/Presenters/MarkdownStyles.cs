@@ -15,7 +15,7 @@ namespace CursorialEdit.Presenters;
 /// <b><c>Md.*</c> theme tokens</b> (<see cref="MdThemeKeys"/>, authored per color tier in
 /// <see cref="MdTheme"/>): every getter resolves its token through the framework lookup chain
 /// (<see cref="ResourceExtensions.TryFindResource(UIElement,object,out object?)"/> — the same mechanism
-/// <c>ThemeKeys.SelectionBrush</c> uses in <c>LeafBlockPresenter.PaintSelection</c>) against the calling
+/// <c>ThemeKeys.SelectionBrush</c> uses in <c>LeafBlockPresenter.ResolveSelection</c>) against the calling
 /// presenter element, so the value follows <c>UIApplication.ActualThemeVariant</c> and honors any
 /// nearer-scope override (the FW-A seam).
 /// </summary>

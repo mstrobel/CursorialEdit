@@ -114,6 +114,9 @@ internal sealed class MarkdownEditingHarness : IDisposable
     /// <summary>The composited background color of one cell — the selection / active-well observable.</summary>
     public Color BackgroundAt(int column, int row) => Host.GetCell(column, row).Style.Background;
 
+    /// <summary>The composited text attributes of one cell — the NoColor selection observable (<see cref="TextAttributes.Inverse"/>).</summary>
+    public TextAttributes AttributesAt(int column, int row) => Host.GetCell(column, row).Style.Attributes;
+
     /// <summary>The composited text of a frame row (trimmed).</summary>
     public string RowTrimmed(int row) => Host.GetRowText(row).TrimEnd();
 

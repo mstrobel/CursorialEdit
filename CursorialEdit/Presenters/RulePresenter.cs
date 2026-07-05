@@ -33,6 +33,12 @@ public sealed class RulePresenter : LeafBlockPresenter
         }
 
         if (rows > 0 && width > 0)
-            context.DrawText(0, 0, new string(RuleGlyph, width), MarkdownStyles.RuleBrush(this));
+        {
+            // A thematic break is one visual decoration whose `---`/`***`/`___` source maps to no cells of
+            // the rendered rule; when the break's line is selected (e.g. a document-spanning selection) the
+            // whole rule reads as selected, so the highlight spans the full width (WP11b).
+            var selection = SelectedCellsForVerbatimLine(0).IsEmpty ? RowSelection.None : new RowSelection(0, width);
+            DrawSelectableText(context, 0, 0, new string(RuleGlyph, width), MarkdownStyles.RuleBrush(this), null, default, selection);
+        }
     }
 }

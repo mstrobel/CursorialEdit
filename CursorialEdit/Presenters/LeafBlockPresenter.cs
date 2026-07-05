@@ -66,6 +66,17 @@ public abstract class LeafBlockPresenter : UIElement
     private RunMap? _inactiveMap;
     private int _inactiveWidth = -1;
 
+    // ── selection paint state, resolved once per Render (WP11b) ──
+    // The selection is composed INTO the per-run/per-cell DrawText (the M1 PlainTextPresenter model), never
+    // a separate background scrim: an opaque run background (inline/code-block fill) can no longer punch a
+    // hole through the highlight, and the NoColor tier degrades to TextAttributes.Inverse in the cell style
+    // (a scrim's Inverse is overwritten by the glyph draw, so it must ride the glyph's own cells).
+    private bool _selectionActive;   // a non-empty selection is painting this pass
+    private bool _selectionNoColor;  // NoColor tier → Inverse instead of a fill brush
+    private IBrush? _selectionBrush;  // the selection fill (color tiers); null on NoColor
+    private int _selectionStart;     // block-relative source range the SelectionProvider …
+    private int _selectionEnd;       // … reported this pass ([_selectionStart, _selectionEnd))
+
     /// <summary>Creates the presenter for a block's <paramref name="lines"/>.</summary>
     /// <param name="lines">The block's source lines (≥ 1), buffer-split with endings preserved.</param>
     /// <param name="inlineRuns">The block's block-relative inline runs (<see cref="Block.InlineRuns"/>); empty for plain text/code.</param>
@@ -289,14 +300,15 @@ public abstract class LeafBlockPresenter : UIElement
         int width = Math.Max(1, context.Size.Columns);
         int rows = Math.Min(MeasuredRowCount(width), bounds.Rows);
 
-        // Backgrounds are painted BEFORE the content, over the still-empty cells, then the rows draw with a
-        // transparent glyph background that lets the fills show through (DrawText's contract) — so a wide
-        // cluster is written whole by the row pass and its wide-cell bookkeeping is never disturbed by a
-        // per-cell background write. Order: block fill (code), then the subtle active-block well (§4.3),
-        // then the selection fill on top so a selection reads over the well. None changes the height (WP9).
+        // Order: block fill (code) and the subtle active-block well (§4.3) paint BEFORE the content as
+        // background pre-passes over the still-empty cells (a wide cluster is then written whole by the row
+        // pass, its wide-cell bookkeeping undisturbed). The SELECTION is NOT a pre-pass — it is composed into
+        // the row draws themselves (WP11b): each selected sub-span carries the selection fill as its own
+        // DrawText background (so an opaque code fill can't hole it), or, on NoColor, Inverse in the cell
+        // style. None of the three changes the block's height (WP9).
+        ResolveSelection(context);
         PaintBackground(context, width, rows);
         PaintActiveWell(context, width, rows);
-        PaintSelection(context, width, rows);
         RenderRows(context, width, rows);
     }
 
@@ -326,7 +338,7 @@ public abstract class LeafBlockPresenter : UIElement
         if (_activeLine is not { } line || line < 0 || line >= _lines.Count)
         {
             for (var row = 0; row < rows; row++)
-                DrawInactiveRow(context, inactive, row, blockText, foreground);
+                DrawInactiveRow(context, inactive, row, blockText, foreground, SelectedCells(inactive, row, width, slide: 0));
             return;
         }
 
@@ -339,12 +351,13 @@ public abstract class LeafBlockPresenter : UIElement
             if (inactive.LineOfRow(row) == line)
             {
                 if (row == firstRow)
-                    DrawActiveRow(context, active, activeRow, drawAtRow: row, blockText, foreground, width);
+                    DrawActiveRow(context, active, activeRow, drawAtRow: row, blockText, foreground, width,
+                        SelectedCells(active, activeRow, width, _slideOffset));
                 // the reserved wrapped rows stay blank — height preserved, no sibling moves
             }
             else
             {
-                DrawInactiveRow(context, inactive, row, blockText, foreground);
+                DrawInactiveRow(context, inactive, row, blockText, foreground, SelectedCells(inactive, row, width, slide: 0));
             }
         }
     }
@@ -352,8 +365,11 @@ public abstract class LeafBlockPresenter : UIElement
     /// <summary>
     /// Draws a non-active visual row plainly: each visible run's source slice (or synthetic glyph) at
     /// its natural cell, formatted (bold/italic/code/link/heading); zero-width hidden marks draw nothing.
+    /// The row's <paramref name="selection"/> (cell interval, from <see cref="SelectedCells"/>) is composed
+    /// into each run's draw by <see cref="DrawSelectableText"/> — so a selected inline-code cell carries the
+    /// selection fill, not the opaque code fill (WP11b), and NoColor selection rides <c>Inverse</c>.
     /// </summary>
-    protected virtual void DrawInactiveRow(RenderContext context, RunMap map, int row, string blockText, IBrush foreground)
+    protected virtual void DrawInactiveRow(RenderContext context, RunMap map, int row, string blockText, IBrush foreground, RowSelection selection)
     {
         foreach (var run in map.RunsForRow(row))
         {
@@ -362,7 +378,7 @@ public abstract class LeafBlockPresenter : UIElement
                 if (run.Glyph is { Length: > 0 } glyph)
                 {
                     var (fg, style) = StyleForSynthetic(run, foreground);
-                    context.DrawText(run.Col, row, glyph, fg, null, style);
+                    DrawSelectableText(context, run.Col, row, glyph, fg, null, style, selection);
                 }
 
                 continue;
@@ -376,7 +392,7 @@ public abstract class LeafBlockPresenter : UIElement
                 continue;
 
             var (foregroundBrush, background, cellStyle) = StyleForContent(run, foreground);
-            context.DrawText(run.Col, row, slice, foregroundBrush, background, cellStyle);
+            DrawSelectableText(context, run.Col, row, slice, foregroundBrush, background, cellStyle, selection);
         }
     }
 
@@ -386,7 +402,7 @@ public abstract class LeafBlockPresenter : UIElement
     /// slide, and each column draws its whole cluster, a dim continuation indicator, or blank padding.
     /// </summary>
     protected virtual void DrawActiveRow(
-        RenderContext context, RunMap activeMap, int activeRow, int drawAtRow, string blockText, IBrush foreground, int width)
+        RenderContext context, RunMap activeMap, int activeRow, int drawAtRow, string blockText, IBrush foreground, int width, RowSelection selection)
     {
         var clip = activeMap.ClipRow(activeRow, _slideOffset, width);
         var cells = clip.Cells;
@@ -398,12 +414,13 @@ public abstract class LeafBlockPresenter : UIElement
             {
                 case ClipCellKind.Head:
                     // A synthetic head cell (a ↵ hard break on the active line) draws its glyph; a
-                    // text/revealed-mark cell draws its whole source grapheme.
+                    // text/revealed-mark cell draws its whole source grapheme. The selection (in
+                    // post-slide viewport cells) is composed into this cell's own draw.
                     var grapheme = cell.Glyph is { Length: > 0 } g ? g.AsSpan() : FirstGrapheme(blockText, cell.SrcOffset);
                     if (!grapheme.IsEmpty)
                     {
                         var (fg, style) = ActiveCellStyle(cell.Run, foreground);
-                        context.DrawText(column, drawAtRow, grapheme, fg, null, style);
+                        DrawSelectableText(context, column, drawAtRow, grapheme, fg, null, style, selection);
                     }
 
                     break;
@@ -441,73 +458,199 @@ public abstract class LeafBlockPresenter : UIElement
     }
 
     /// <summary>
-    /// Paints the document selection's fill across this block's selected cells (M2.WP8): the selection is
-    /// a block-relative source range (<see cref="SelectionProvider"/>) threaded through the same run maps
-    /// the rows drew from — the inactive map for formatted rows, the active (slid) map for the revealed
-    /// row — so a partially-selected wide cluster fills whole and a zero-width hidden mark fills nothing.
-    /// The fill is a glyph-transparent scrim, so the formatted text/marks show through highlighted.
+    /// Resolves the document selection for this Render pass (M2.WP11b): the block-relative source range
+    /// (<see cref="SelectionProvider"/>), whether the tier is NoColor (→ <see cref="TextAttributes.Inverse"/>
+    /// in the cell style, the BuiltIn non-color selection channel — a background scrim degrades to nothing),
+    /// and, on a color tier, the resolved selection fill (<see cref="ThemeKeys.SelectionBrush"/>, the
+    /// <c>TextPresenter</c> convention). Resolved once per pass so the per-cell draw path is a field read,
+    /// not a resource-chain walk per row (the deferred-cleanup note on the M1 path).
     /// </summary>
-    protected virtual void PaintSelection(RenderContext context, int width, int rows)
+    private void ResolveSelection(RenderContext context)
     {
-        if (SelectionProvider?.Invoke() is not { } selection)
+        _selectionActive = false;
+        _selectionBrush = null;
+
+        if (SelectionProvider?.Invoke() is not { } selection || selection.End <= selection.Start)
             return;
 
-        var (selStart, selEnd) = selection;
-        if (selEnd <= selStart)
-            return;
-
-        if (!(this.TryFindResource(ThemeKeys.SelectionBrush, out var value) && value is IBrush brush))
-            return;
-
-        var inactive = InactiveMapForWidth(width);
-        int? activeLine = _activeLine is { } line && line >= 0 && line < _lines.Count ? line : null;
-        int activeDrawRow = -1, activeMapRow = -1;
-        RunMap? active = null;
-        if (activeLine is { } al)
+        _selectionStart = selection.Start;
+        _selectionEnd = selection.End;
+        _selectionNoColor = context.Capabilities.Color.Depth == ColorDepth.NoColor;
+        if (_selectionNoColor)
         {
-            active = MapForWidth(width);
-            activeDrawRow = inactive.RowsOfLine(al).FirstRow;
-            activeMapRow = active.RowsOfLine(al).FirstRow;
+            _selectionActive = true; // the Inverse path needs no fill brush
+            return;
         }
 
-        for (var row = 0; row < rows; row++)
+        if (this.TryFindResource(ThemeKeys.SelectionBrush, out var value) && value is IBrush brush)
         {
-            if (activeLine is { } al2 && inactive.LineOfRow(row) == al2)
-            {
-                // The active line renders as one slid row at activeDrawRow; its reserved wrapped rows are
-                // blank (nothing to highlight there — height-invariance).
-                if (row == activeDrawRow && active is { } activeMap)
-                    PaintRowSelection(context, activeMap, activeMapRow, row, width, selStart, selEnd, brush, _slideOffset);
-                continue;
-            }
-
-            PaintRowSelection(context, inactive, row, row, width, selStart, selEnd, brush, slide: 0);
+            _selectionBrush = brush;
+            _selectionActive = true;
         }
     }
 
     /// <summary>
-    /// Fills the selection's intersection with one visual row: the block-relative <c>[selStart, selEnd)</c>
-    /// is clamped to the row's source span and its ends mapped to cells through <paramref name="map"/>
-    /// (minus the active line's <paramref name="slide"/>, clamped into the viewport), then drawn as a
-    /// background scrim across those cells.
+    /// The selected cell interval of one visual row (<see cref="RowSelection"/>): the block-relative
+    /// selection is clamped to the row's source span and its ends mapped to cells through
+    /// <paramref name="map"/> (minus the active line's <paramref name="slide"/>, clamped into the viewport).
+    /// A zero-width hidden mark, or no selection this pass, yields <see cref="RowSelection.None"/>. Whole-cell
+    /// discipline lives in <see cref="RunMap.Locate"/>, so a partially-selected wide cluster's interval spans
+    /// the whole cluster.
     /// </summary>
-    private static void PaintRowSelection(
-        RenderContext context, RunMap map, int mapRow, int drawRow, int width,
-        int selStart, int selEnd, IBrush brush, int slide)
+    protected RowSelection SelectedCells(RunMap map, int mapRow, int width, int slide)
     {
+        if (!_selectionActive)
+            return RowSelection.None;
+
         int rowStartSrc = map.OffsetAt(mapRow, 0);
         int rowEndSrc = map.RowEndOffset(mapRow);
-        int fromSrc = Math.Max(selStart, rowStartSrc);
-        int toSrc = Math.Min(selEnd, rowEndSrc);
+        int fromSrc = Math.Max(_selectionStart, rowStartSrc);
+        int toSrc = Math.Min(_selectionEnd, rowEndSrc);
         if (toSrc <= fromSrc)
-            return;
+            return RowSelection.None;
 
         int fromCell = Math.Clamp(map.Locate(fromSrc, endAffinity: false).Cell - slide, 0, width);
         int toCell = Math.Clamp(map.Locate(toSrc, endAffinity: true).Cell - slide, 0, width);
-        if (toCell <= fromCell)
-            return; // the selected span collapsed to zero-width cells (a hidden mark) — nothing to paint
+        return new RowSelection(fromCell, toCell);
+    }
 
-        context.PaintRectangle(new Rect(fromCell, drawRow, toCell - fromCell, 1), brush);
+    /// <summary>
+    /// The selected cell interval of a source line drawn <b>verbatim</b> at cell 0 (the
+    /// <see cref="FallbackSourcePresenter"/>/<see cref="FrontMatterPresenter"/>/<see cref="RawSourcePresenter"/>
+    /// path, which draw <c>Lines[i].Text</c> 1:1 with no run map): the block selection ∩ the line's text,
+    /// with the ends measured to cells by <see cref="GraphemeWidth"/> (whole-cell). A subclass that slides
+    /// the line subtracts its slide and clamps to the viewport. Returns <see cref="RowSelection.None"/> when
+    /// the line is unselected this pass.
+    /// </summary>
+    protected RowSelection SelectedCellsForVerbatimLine(int lineIndex)
+    {
+        if (!_selectionActive || lineIndex < 0 || lineIndex >= _lines.Count)
+            return RowSelection.None;
+
+        int lineStart = LineSourceStart(lineIndex);
+        var text = _lines[lineIndex].Text.AsSpan();
+        int fromSrc = Math.Max(_selectionStart, lineStart) - lineStart;   // line-relative
+        int toSrc = Math.Min(_selectionEnd, lineStart + text.Length) - lineStart;
+        if (toSrc <= fromSrc || fromSrc >= text.Length)
+            return RowSelection.None;
+
+        fromSrc = Math.Max(0, fromSrc);
+        int fromCell = GraphemeWidth.StringWidth(text[..fromSrc]);
+        int toCell = GraphemeWidth.StringWidth(text[..toSrc]);
+        return new RowSelection(fromCell, toCell);
+    }
+
+    /// <summary>The block-relative source offset where source line <paramref name="lineIndex"/> begins (terminators included).</summary>
+    private int LineSourceStart(int lineIndex)
+    {
+        int start = 0;
+        for (var i = 0; i < lineIndex; i++)
+            start += _lines[i].TotalLength;
+        return start;
+    }
+
+    /// <summary>
+    /// Slides a verbatim line's cell interval into the viewport for a horizontally-slid row (the
+    /// <see cref="RawSourcePresenter"/> active line, drawn at <c>-slide</c>): subtracts the row's
+    /// <paramref name="slide"/> and clamps to <c>[0, width]</c>, matching <see cref="SelectedCells"/>'s
+    /// viewport convention so <see cref="DrawSelectableText"/> reads one coordinate space everywhere.
+    /// </summary>
+    protected static RowSelection SlideSelection(RowSelection lineSelection, int slide, int width)
+    {
+        if (lineSelection.IsEmpty)
+            return RowSelection.None;
+
+        int from = Math.Clamp(lineSelection.FromCell - slide, 0, width);
+        int to = Math.Clamp(lineSelection.ToCell - slide, 0, width);
+        return new RowSelection(from, to);
+    }
+
+    /// <summary>
+    /// Draws <paramref name="text"/> at cell (<paramref name="col"/>, <paramref name="row"/>) with the
+    /// document <paramref name="selection"/> composed INTO the cells it covers (M2.WP11b — the shared seam
+    /// every presenter and subclass draws rows through). The span is split at the row's selected cell
+    /// interval and the selected sub-span is drawn with the selection fill as its own cell background — so
+    /// an opaque per-run background (inline-code or code-block fill) passed as <paramref name="background"/>
+    /// cannot punch a hole through the highlight — or, on the NoColor tier, with
+    /// <see cref="TextAttributes.Inverse"/> in the cell style (a scrim's Inverse is overwritten by the glyph
+    /// draw, so it must ride the glyph's cells). Selection boundaries are cluster-aligned cell positions, so
+    /// the split lands on grapheme boundaries and a wide cluster is drawn whole-selected. When nothing on the
+    /// row is selected this is one ordinary <c>DrawText</c>.
+    /// </summary>
+    protected void DrawSelectableText(
+        RenderContext context, int col, int row, ReadOnlySpan<char> text,
+        IBrush foreground, IBrush? background, CellStyle style, RowSelection selection)
+    {
+        if (text.IsEmpty)
+            return;
+
+        if (!_selectionActive || selection.IsEmpty)
+        {
+            context.DrawText(col, row, text, foreground, background, style);
+            return;
+        }
+
+        // Partition the drawn span into an unselected prefix, a selected middle, and an unselected suffix at
+        // the [FromCell, ToCell) boundaries, walking grapheme clusters from `col`. Because the boundaries are
+        // cluster-aligned cell positions, each split falls on a grapheme boundary (a wide cluster is never
+        // halved). selStartCell/selEndCell carry the drawn cell each sub-span begins at.
+        int cell = col;
+        int index = 0;
+        int prefixEnd = -1, selEnd = -1;
+        int selStartCell = col, selEndCell = col;
+        var clusters = text.GetGraphemeEnumerator();
+        while (clusters.MoveNext())
+        {
+            if (prefixEnd < 0 && cell >= selection.FromCell)
+            {
+                prefixEnd = index;
+                selStartCell = cell;
+            }
+
+            if (selEnd < 0 && cell >= selection.ToCell)
+            {
+                selEnd = index;
+                selEndCell = cell;
+            }
+
+            cell += GraphemeWidth.StringWidth(clusters.Current);
+            index += clusters.Current.Length;
+        }
+
+        if (prefixEnd < 0) { prefixEnd = text.Length; selStartCell = cell; }
+        if (selEnd < 0) { selEnd = text.Length; selEndCell = cell; }
+
+        if (prefixEnd > 0)
+            context.DrawText(col, row, text[..prefixEnd], foreground, background, style);
+
+        if (selEnd > prefixEnd)
+            DrawSelectedSpan(context, selStartCell, row, text[prefixEnd..selEnd], foreground, style);
+
+        if (selEnd < text.Length)
+            context.DrawText(selEndCell, row, text[selEnd..], foreground, background, style);
+    }
+
+    /// <summary>Draws a selected sub-span: the selection fill as its background (color tiers), or <see cref="TextAttributes.Inverse"/> in the cell style (NoColor).</summary>
+    private void DrawSelectedSpan(RenderContext context, int col, int row, ReadOnlySpan<char> text, IBrush foreground, CellStyle style)
+    {
+        if (_selectionNoColor)
+            context.DrawText(col, row, text, foreground, null, style.AddAttributes(TextAttributes.Inverse));
+        else
+            context.DrawText(col, row, text, foreground, _selectionBrush, style); // fill replaces any run background — no hole
+    }
+
+    /// <summary>
+    /// A row's selected cell interval <c>[FromCell, ToCell)</c> (post-slide, viewport-clamped), the
+    /// per-row hand-off <see cref="DrawSelectableText"/> consults to compose the selection into each draw.
+    /// <see cref="None"/> (the default) is "nothing selected on this row".
+    /// </summary>
+    protected readonly record struct RowSelection(int FromCell, int ToCell)
+    {
+        /// <summary>The empty interval — no cell on the row is selected.</summary>
+        public static RowSelection None => default;
+
+        /// <summary>Whether the interval covers no cells.</summary>
+        public bool IsEmpty => ToCell <= FromCell;
     }
 
     // ───────────────────────────── styling hooks ─────────────────────────────

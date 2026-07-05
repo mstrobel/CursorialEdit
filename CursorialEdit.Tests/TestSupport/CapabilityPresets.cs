@@ -1,3 +1,4 @@
+using Cursorial.Output.Capabilities;
 using Cursorial.Terminal;
 using Cursorial.UI.Testing;
 
@@ -22,6 +23,14 @@ internal static class CapabilityPresets
     /// <inheritdoc cref="KittyTruecolorClipboard"/>
     public const string Ansi16LegacyClipboard = nameof(Ansi16LegacyClipboard);
 
+    /// <summary>
+    /// The NoColor tier composed onto the Kitty wire (§5.1's <c>with (ColorDepth)</c>): full input and
+    /// styling, but color collapsed to <c>Default</c> (<see cref="ColorCapabilities.None"/>, whose
+    /// <c>Depth</c> is <see cref="ColorDepth.NoColor"/>). Render-affecting suites add it to assert the
+    /// redundant non-color channel (§18.3) — e.g. selection degrading to <c>TextAttributes.Inverse</c>.
+    /// </summary>
+    public const string NoColor = nameof(NoColor);
+
     /// <summary>Both §5.1 wire presets — rendering/caret/input suites run under each.</summary>
     public static TheoryData<string> Both =>
         new() { nameof(TestCapabilities.KittyTruecolor), nameof(TestCapabilities.Ansi16Legacy) };
@@ -36,8 +45,15 @@ internal static class CapabilityPresets
         nameof(TestCapabilities.Ansi16Legacy) => TestCapabilities.Ansi16Legacy,
         KittyTruecolorClipboard => WithClipboardWrite(TestCapabilities.KittyTruecolor),
         Ansi16LegacyClipboard => WithClipboardWrite(TestCapabilities.Ansi16Legacy),
+        NoColor => WithNoColor(TestCapabilities.KittyTruecolor),
         _ => throw new ArgumentOutOfRangeException(nameof(preset)),
     };
+
+    private static TerminalCapabilities WithNoColor(TerminalCapabilities capabilities) =>
+        capabilities with
+        {
+            Output = capabilities.Output with { Color = ColorCapabilities.None },
+        };
 
     private static TerminalCapabilities WithClipboardWrite(TerminalCapabilities capabilities) =>
         capabilities with

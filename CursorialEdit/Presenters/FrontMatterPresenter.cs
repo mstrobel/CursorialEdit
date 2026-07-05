@@ -69,7 +69,7 @@ public sealed class FrontMatterPresenter : LeafBlockPresenter
         }
 
         for (var row = 0; row < rows && row < Lines.Count; row++)
-            context.DrawText(0, row, Lines[row].Text, MarkdownStyles.FrontMatterBrush(this), null, MarkdownStyles.Dim(this));
+            DrawSelectableText(context, 0, row, Lines[row].Text, MarkdownStyles.FrontMatterBrush(this), null, MarkdownStyles.Dim(this), SelectedCellsForVerbatimLine(row));
 
         // The collapse affordance sits in the top-right corner — but only when it would not overwrite the
         // first line's content (a full-width metadata value keeps its last cell).

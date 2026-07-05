@@ -80,7 +80,7 @@ public sealed class CodeBlockPresenter : LeafBlockPresenter
     }
 
     /// <inheritdoc/>
-    protected override void DrawInactiveRow(RenderContext context, RunMap map, int row, string blockText, IBrush foreground)
+    protected override void DrawInactiveRow(RenderContext context, RunMap map, int row, string blockText, IBrush foreground, RowSelection selection)
     {
         int line = map.LineOfRow(row);
 
@@ -89,7 +89,7 @@ public sealed class CodeBlockPresenter : LeafBlockPresenter
             // The opening fence carries a dim language label; a closing fence is blank fill. Both hide
             // their `````/`~~~` source until the line is active (then the base reveal path shows it).
             if (line == 0 && !string.IsNullOrWhiteSpace(_fenceInfo))
-                context.DrawText(0, row, _fenceInfo!.Trim(), MarkdownStyles.CodeLabelBrush(this), MarkdownStyles.CodeFillBrush(this), MarkdownStyles.Dim(this));
+                DrawSelectableText(context, 0, row, _fenceInfo!.Trim(), MarkdownStyles.CodeLabelBrush(this), MarkdownStyles.CodeFillBrush(this), MarkdownStyles.Dim(this), selection);
             return;
         }
 
@@ -98,11 +98,13 @@ public sealed class CodeBlockPresenter : LeafBlockPresenter
             return;
 
         // Resolve the (loop-invariant) code-fill background once — the token overdraw reuses it rather
-        // than walking the resource chain per token on the render hot path.
+        // than walking the resource chain per token on the render hot path. DrawSelectableText composes the
+        // selection into each draw, so a selected code cell carries the selection fill, not the code fill
+        // (the WP11b hole fix) — and the fence-open pre-pass under the row keeps unselected cells filled.
         var codeFill = MarkdownStyles.CodeFillBrush(this);
 
         // Draw the whole line monochrome over the fill, then overdraw the highlighted token spans.
-        context.DrawText(0, row, display, foreground, codeFill);
+        DrawSelectableText(context, 0, row, display, foreground, codeFill, default, selection);
 
         // Tokens are in ascending Start order, so carry a running (char, cell) cursor instead of
         // re-measuring StringWidth([0, Start)) per token — O(n) overdraw, not O(n·tokenCount).
@@ -116,7 +118,7 @@ public sealed class CodeBlockPresenter : LeafBlockPresenter
             int length = Math.Min(token.Length, display.Length - token.Start);
             prevCell += GraphemeWidth.StringWidth(display.AsSpan(prevChar, token.Start - prevChar));
             prevChar = token.Start;
-            context.DrawText(prevCell, row, display.AsSpan(token.Start, length), MarkdownStyles.CodeTokenBrush(this, token.Class), codeFill);
+            DrawSelectableText(context, prevCell, row, display.AsSpan(token.Start, length), MarkdownStyles.CodeTokenBrush(this, token.Class), codeFill, default, selection);
         }
     }
 
