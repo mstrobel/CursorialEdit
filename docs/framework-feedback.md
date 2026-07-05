@@ -445,3 +445,26 @@ a *child* of `EditorShell`. Keys still route to the root (so it looked half-work
 arrows, but no cursor). **Workaround:** dispatcher-post an explicit `Focus()` after layout settles.
 **Proposal:** include the root element itself in the activation first-tab-stop walk (or auto-focus the
 root when it is focusable and no descendant tab stop exists).
+
+## FB-25 — `FillRectangle` overwrites glyphs (no glyph-transparent fill) — `proposed` (rendering)
+
+Found painting the markdown selection highlight and the active-block well. `RenderContext.FillRectangle`
+uses `overwrite: true`, so it clobbers any glyphs already drawn in the rect **and** corrupts wide-cell
+(double-width cluster) bookkeeping — unusable for a background scrim behind text. The working primitive is
+`PaintRectangle` (intra-scene, glyph-transparent), but it only shows through if painted BEFORE the text
+over still-empty cells (it relies on `DrawText`'s transparent background). **Friction:** the natural-named
+API (`FillRectangle`) is the wrong one for the common "tint a region behind existing content" case, and the
+right one (`PaintRectangle`) has an ordering constraint that isn't obvious. **Proposal:** document the
+distinction at both call sites, and/or offer a `FillRectangle(..., overwrite: false)` overload that composites
+as a background scrim without touching glyphs or wide-cell state.
+
+## FB-26 — No run map for "this block with an ARBITRARY active line" — `proposed` (app-layer seam)
+
+Found doing vertical (goal-column) motion into a block that is about to become active. `MoveVertical`
+computes the goal cell against the target block's INACTIVE map, but the line then renders on the ACTIVE
+(revealed) map; for lines with LEADING marks (headings `# `, list/quote markers) the revealed layout occupies
+cells the hidden layout doesn't, so the landing drifts by the marker width. The caret host exposes
+"map for the current active line" but not "map as if line N were active", so the app can't pre-compute the
+landing against the layout it will actually render. Bounded (a cell or two, leading-mark blocks only) and
+deferred, but the missing seam is the root cause. **Proposal (app-side):** let the caret query a block's
+run map for an arbitrary hypothetical active line, so vertical landings resolve against the post-reveal layout.
