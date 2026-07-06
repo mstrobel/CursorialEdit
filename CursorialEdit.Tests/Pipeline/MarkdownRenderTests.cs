@@ -203,4 +203,31 @@ public sealed class MarkdownRenderTests
         Assert.Equal("new body", harness.Row(4));
         Assert.NotSame(oldProducer, harness.Shell.BlockProducer);
     }
+
+    [Fact] // the code fill covers the fenced block but NOT the trailing blank lines it owns after the closing fence
+    public void CodeBlockFill_StopsAtClosingFence_DoesNotBleedToTrailingBlanks()
+    {
+        // Heading first so the caret rests there (not in the code block → no active-well tint muddying the fill).
+        using var h = CreateShell($"# T\n\n{Fence}\ncode\n{Fence}\n\n\npara\n", nameof(TestCapabilities.KittyTruecolor));
+
+        int codeRow = FindRow(h, "code");
+        int paraRow = FindRow(h, "para");
+        Assert.True(codeRow >= 0 && paraRow > codeRow + 1, $"codeRow={codeRow} paraRow={paraRow}");
+
+        var fill = h.Cell(2, codeRow).Style.Background;                       // the code fill on the code-content row
+        Assert.NotEqual(h.Cell(2, paraRow).Style.Background, fill);           // sanity: the fill is a distinctive background
+
+        // codeRow+1 is the closing fence (inside the block, still filled). Every row after it up to `para` is a
+        // trailing blank the block owns — none may carry the code fill (the bug bled it all the way to `para`).
+        for (var r = codeRow + 2; r < paraRow; r++)
+            Assert.False(h.Cell(2, r).Style.Background == fill, $"row {r} (a trailing blank after the closing fence) still has the code fill");
+    }
+
+    private static int FindRow(ShellHarness h, string text)
+    {
+        for (var r = 0; r < 24; r++)
+            if (h.Row(r).Contains(text))
+                return r;
+        return -1;
+    }
 }

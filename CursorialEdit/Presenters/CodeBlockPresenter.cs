@@ -75,8 +75,22 @@ public sealed class CodeBlockPresenter : LeafBlockPresenter
     /// <inheritdoc/>
     protected override void PaintBackground(RenderContext context, int width, int rows)
     {
-        if (width > 0 && rows > 0)
-            context.FillRectangle(new Rect(0, 0, width, rows), MarkdownStyles.CodeFillBrush(this)); // themeable token, not the hardcoded color
+        // Fill only the code's OWN rows — not the trailing blank lines this block owns after its closing fence (a
+        // leaf block owns the blank lines up to the next block). Filling them bled the code background down past
+        // the ``` to the next content. Code rows map 1:1 to source lines (no wrap), so content ends at the last
+        // non-whitespace line; blank lines INSIDE the fences precede it and are still filled.
+        int fillRows = Math.Min(rows, Lines.Count - TrailingBlankLineCount());
+        if (width > 0 && fillRows > 0)
+            context.FillRectangle(new Rect(0, 0, width, fillRows), MarkdownStyles.CodeFillBrush(this)); // themeable token, not the hardcoded color
+    }
+
+    /// <summary>The count of whitespace-only source lines at the end of the block (owned trailing blanks after the closing fence / last code line).</summary>
+    private int TrailingBlankLineCount()
+    {
+        int n = 0;
+        for (var i = Lines.Count - 1; i >= 0 && string.IsNullOrWhiteSpace(Lines[i].Text); i--)
+            n++;
+        return n;
     }
 
     /// <inheritdoc/>
