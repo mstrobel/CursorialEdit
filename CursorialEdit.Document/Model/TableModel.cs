@@ -519,6 +519,14 @@ public sealed class TableModel
             }
         }
 
+        // An ALL-EMPTY table (every cell empty, e.g. after clearing all cells or a fresh multi-row insert) has
+        // no non-empty span anywhere to seed the interpolation, leaving every row at -1. The header always
+        // occupies the block's first physical line, so anchor row 0 there; the forward pass then places the body
+        // rows (row 1 after the delimiter, the rest consecutively). Without this every RowSourceLine is -1 and
+        // any line-of-row computation (AbsLineOfRow → GetLine) throws. (WP11 fuzz: DeleteRow/MoveRow all-empty.)
+        if (rowLines.Length > 0 && rowLines[0] < 0)
+            rowLines[0] = 0;
+
         for (var i = 1; i < rowLines.Length; i++)
         {
             if (rowLines[i] < 0 && rowLines[i - 1] >= 0)

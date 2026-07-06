@@ -236,9 +236,17 @@ public sealed class TableEditingController
     }
 
     private TableCommand AppendRow(TableModel model, int blockStart)
-        // Grow the table below its last row — the same empty-row insert the structural ops use, so the row
-        // shape and the document's line-ending convention are honoured in one place (was a hardcoded "\n").
-        => InsertRowAt(AbsLineOfRow(model, blockStart, model.RowCount - 1) + 1, BuildEmptyRow(model.ColumnCount), TableEndingText(model, blockStart));
+    {
+        // Grow the table below its last row — the same empty-row insert the structural ops use, so the row shape
+        // and the document's line-ending convention are honoured in one place. For a HEADER-ONLY table the last
+        // model row IS the header, whose next physical line is the DELIMITER: the new body row must land AFTER it
+        // (+2), not between the header and its delimiter (+1), which would split the delimiter off and invalidate
+        // the table. (Mirrors InsertRow's header case; caught by the WP11 fuzz — Tab past the last header cell.)
+        int insertLineAbs = model.RowCount == 1
+            ? AbsLineOfRow(model, blockStart, 0) + 2
+            : AbsLineOfRow(model, blockStart, model.RowCount - 1) + 1;
+        return InsertRowAt(insertLineAbs, BuildEmptyRow(model.ColumnCount), TableEndingText(model, blockStart));
+    }
 
     // ───────────────────────────── cell commands ─────────────────────────────
 
