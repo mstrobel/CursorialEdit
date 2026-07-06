@@ -86,6 +86,15 @@ public sealed class TablePresenter : LeafBlockPresenter
     internal TableModel Model => _model;
 
     /// <summary>
+    /// The rectangular whole-cell selection (M3.WP8, spec §5.4) forwarded to every row so a multi-cell selection
+    /// highlights WHOLE cells instead of the covered source span — the bridge wires this to
+    /// <see cref="ISelectionSource.GetCellRect"/> for this table's block. <see langword="null"/> ⇒ no cell-rect
+    /// (a single-cell text selection or a selection that left the table), and the rows fall back to the WP5
+    /// per-cell text highlight from <see cref="LeafBlockPresenter.SelectionProvider"/>.
+    /// </summary>
+    internal Func<CellRect?>? CellRectProvider { get; set; }
+
+    /// <summary>
     /// The cell-overflow mode (§5.6): <see cref="TableOverflow.Wrap"/> (default) or <see cref="TableOverflow.Truncate"/>.
     /// Settable, mirroring the bridge's <c>EditWrapEnabled</c> — toggling re-derives every row (heights change: a
     /// wrapped tall row collapses to one), rebuilds the caret map, and re-measures. The user-facing command is M5.
@@ -558,10 +567,11 @@ public sealed class TablePresenter : LeafBlockPresenter
     {
         // Shared forwarding delegates for every row (they re-read the fields dynamically) — no per-row closure.
         Func<(int Start, int End)?> forward = () => SelectionProvider?.Invoke();
+        Func<CellRect?> rectForward = () => CellRectProvider?.Invoke();
         Func<(int Offset, int DrawWidth)> window = Window;
         for (var r = 0; r < _model.RowCount; r++)
         {
-            var row = new TableRowPresenter(_model, _metrics, _source, r, _overflow) { SelectionProvider = forward, WindowProvider = window };
+            var row = new TableRowPresenter(_model, _metrics, _source, r, _overflow) { SelectionProvider = forward, CellRectProvider = rectForward, WindowProvider = window };
             _rows.Add(row);
             AddVisualChild(row);
         }

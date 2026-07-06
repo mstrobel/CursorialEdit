@@ -183,6 +183,28 @@ public sealed class TableModel
         return best;
     }
 
+    /// <summary>
+    /// The whole-cell rectangle a document selection whose two ends fall at block-relative offsets
+    /// <paramref name="offsetA"/> and <paramref name="offsetB"/> covers (M3.WP8, spec §5.4): the cells owning
+    /// the two offsets (via <see cref="CellOfOffset"/>), normalized to rows <c>[min..max]</c> × columns
+    /// <c>[min..max]</c>. Returns <see langword="null"/> when both offsets fall in the <b>same</b> cell (an
+    /// ordinary in-cell text selection, unchanged from WP5) or when the table has no cells. The two offsets are
+    /// the selection's anchor and active-caret offsets — order-independent, since the rectangle is symmetric.
+    /// This is the one place a block-like selection exists, scoped to a single table; the underlying selection
+    /// stays an ordinary source range (the model of truth) and is only <i>interpreted</i> as a cell-rect here.
+    /// </summary>
+    public CellRect? CellRectOfRange(int offsetA, int offsetB)
+    {
+        if (CellOfOffset(offsetA) is not { } a || CellOfOffset(offsetB) is not { } b)
+            return null;
+        if (a == b)
+            return null; // both ends in one cell → an ordinary in-cell text selection (WP5), not a cell-rect
+
+        return new CellRect(
+            Math.Min(a.Row, b.Row), Math.Min(a.Column, b.Column),
+            Math.Max(a.Row, b.Row), Math.Max(a.Column, b.Column));
+    }
+
     /// <summary>The block-relative offset at the end of logical <paramref name="row"/>'s source line text (terminator excluded) — where a new row's break is spliced (M3.WP4 Tab-appends-row).</summary>
     public int RowTextEndOffset(int row)
     {
@@ -796,6 +818,33 @@ public enum ColumnAlignment
 
     /// <summary>Right-aligned (<c>--:</c>).</summary>
     Right,
+}
+
+/// <summary>
+/// A rectangular block of whole table cells (M3.WP8, spec §5.4): the inclusive, normalized range of rows
+/// <c>[<see cref="Row0"/>..<see cref="Row1"/>]</c> × columns <c>[<see cref="Col0"/>..<see cref="Col1"/>]</c>
+/// (<c>Row0 ≤ Row1</c>, <c>Col0 ≤ Col1</c>) a multi-cell document selection is interpreted as — the one place
+/// a block-like selection exists, scoped to a single table. Derived from a selection whose two ends fall in
+/// <b>different</b> cells of the same table (<see cref="TableModel.CellRectOfRange"/>); a single-cell selection
+/// stays an ordinary in-cell text selection and yields no rect.
+/// </summary>
+/// <param name="Row0">The top logical row (inclusive).</param>
+/// <param name="Col0">The left column (inclusive).</param>
+/// <param name="Row1">The bottom logical row (inclusive).</param>
+/// <param name="Col1">The right column (inclusive).</param>
+public readonly record struct CellRect(int Row0, int Col0, int Row1, int Col1)
+{
+    /// <summary>Whether cell (<paramref name="row"/>, <paramref name="column"/>) lies inside the rectangle.</summary>
+    public bool Contains(int row, int column) => row >= Row0 && row <= Row1 && column >= Col0 && column <= Col1;
+
+    /// <summary>Whether logical <paramref name="row"/> is within the rectangle's row span.</summary>
+    public bool ContainsRow(int row) => row >= Row0 && row <= Row1;
+
+    /// <summary>The number of rows the rectangle spans (≥ 1).</summary>
+    public int RowSpan => Row1 - Row0 + 1;
+
+    /// <summary>The number of columns the rectangle spans (≥ 1).</summary>
+    public int ColumnSpan => Col1 - Col0 + 1;
 }
 
 /// <summary>

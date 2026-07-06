@@ -258,6 +258,96 @@ public sealed class TableEditingController
         return TableCommand.Splice(new Edit(start, removed, string.Empty), EditKind.Structural, start, seal: true);
     }
 
+    /// <summary>
+    /// Clears (or replaces) every cell of a rectangular whole-cell selection (M3.WP8, spec §5.4) as <b>one</b>
+    /// sealed structural splice — a rect <c>Delete</c>/Clear passes <c>text = ""</c> to empty all selected cells;
+    /// a type/paste over the rect passes the sanitized text, which lands in the rect's <b>top-left</b> cell while
+    /// the rest empty. The splice is a single contiguous edit from the top-left cell's content to the bottom-right
+    /// cell's content: every byte between the selected cells (pipes, padding, the delimiter line, terminators, and
+    /// any non-selected cells) is copied verbatim, and only each selected cell's <see cref="CellContentRange"/> is
+    /// blanked — so GFM structure is preserved exactly and the result re-parses to the same table with the selected
+    /// cells emptied. Caret → the top-left cell (after the inserted text). Undo restores the pre-op source + caret.
+    /// </summary>
+    public TableCommand ReplaceCellRect(TableModel model, int blockStart, CellRect rect, string text, bool collapseBreaks)
+    {
+        // The top-left cell is the earliest selected cell in source order and the bottom-right the latest, so their
+        // content bounds delimit the whole contiguous span covering the rectangle (row-major, columns left-to-right).
+        int spanStart = model.CellContentRange(rect.Row0, rect.Col0).Start;
+        int spanEnd = model.CellContentRange(rect.Row1, rect.Col1).End;
+        if (spanEnd < spanStart)
+            return TableCommand.NoOperation; // defensive — a degenerate/empty rectangle
+
+        string sanitized = Sanitize(text ?? string.Empty, collapseBreaks, precedingBackslashes: 0);
+        string removed = _buffer.GetTextAtOffset(blockStart + spanStart, spanEnd - spanStart);
+
+        // Rebuild the span, copying everything verbatim except each selected cell's content region (blanked; the
+        // top-left cell takes the sanitized text). Cursor walks block-relative offsets; indices into `removed`
+        // are cursor − spanStart.
+        var sb = new StringBuilder(removed.Length + sanitized.Length);
+        int cursor = spanStart;
+        for (var r = rect.Row0; r <= rect.Row1; r++)
+        {
+            for (var c = rect.Col0; c <= rect.Col1; c++)
+            {
+                var (cs, ce) = model.CellContentRange(r, c);
+                if (cs > cursor)
+                    sb.Append(removed, cursor - spanStart, cs - cursor);
+                if (r == rect.Row0 && c == rect.Col0)
+                    sb.Append(sanitized);
+                cursor = Math.Max(cursor, ce);
+            }
+        }
+
+        if (spanEnd > cursor)
+            sb.Append(removed, cursor - spanStart, spanEnd - cursor);
+
+        string inserted = sb.ToString();
+        if (string.Equals(inserted, removed, StringComparison.Ordinal))
+            return TableCommand.NoOperation; // every selected cell already empty (and no text to insert)
+
+        var editStart = _buffer.GetPosition(blockStart + spanStart);
+        // Land in the top-left cell after the inserted text, computed ARITHMETICALLY on editStart's line: `sanitized`
+        // carries no line break and is spliced in at editStart, so the landing stays on that line. Resolving it via
+        // GetPosition on the PRE-edit buffer would walk through `removed` (which spans newlines for a multi-row rect)
+        // to the wrong line — and past the buffer end for a large paste, which GetPosition throws on (the same
+        // arithmetic-landing reason Insert/Replace already state).
+        var target = new TextPosition(editStart.Line, editStart.Col + sanitized.Length);
+        return TableCommand.Splice(new Edit(editStart, removed, inserted), EditKind.Structural, target, seal: true);
+    }
+
+    /// <summary>
+    /// The markdown <b>sub-table</b> a rectangular cell selection copies as (M3.WP8, spec §5.4): the selected
+    /// cells emitted as a valid GFM table — the top selected row as the header, then a synthesized delimiter row
+    /// carrying the <b>selected columns'</b> alignment, then the remaining selected rows as body. When the rect
+    /// does <b>not</b> include the model's header row this still yields a valid GFM table (the top selected body
+    /// row becomes the sub-table's header, delimiter synthesized from alignment). Cell text is the trimmed content
+    /// (escaped/backtick-guarded pipes preserved verbatim), so the emission re-parses to exactly the selected cells.
+    /// Rows are joined with <paramref name="lineEnding"/> and carry no trailing terminator (it pastes inline).
+    /// </summary>
+    public static string SubTableMarkdown(TableModel model, CellRect rect, string lineEnding = "\n")
+    {
+        ArgumentNullException.ThrowIfNull(model);
+
+        var lines = new List<string>(rect.RowSpan + 1);
+        for (var r = rect.Row0; r <= rect.Row1; r++)
+        {
+            var cells = new string[rect.ColumnSpan];
+            for (var c = rect.Col0; c <= rect.Col1; c++)
+                cells[c - rect.Col0] = model.CellContent(r, c);
+            lines.Add(BuildDataRow(cells));
+
+            if (r == rect.Row0)
+            {
+                var align = new ColumnAlignment[rect.ColumnSpan];
+                for (var c = rect.Col0; c <= rect.Col1; c++)
+                    align[c - rect.Col0] = model.Alignment(c);
+                lines.Add(BuildDelimiterRow(align));
+            }
+        }
+
+        return string.Join(lineEnding, lines);
+    }
+
     /// <summary>Inserts a literal <c>&lt;br&gt;</c> cell break at the caret (spec §5.4 — a command, not Enter). One sealed undo group.</summary>
     public TableCommand InsertCellBreak(TableModel model, int blockStart, TextPosition caret)
     {

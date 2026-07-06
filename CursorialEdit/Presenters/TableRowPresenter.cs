@@ -58,6 +58,17 @@ internal sealed class TableRowPresenter : UIElement
     /// </summary>
     internal Func<(int Start, int End)?>? SelectionProvider { get; set; }
 
+    /// <summary>
+    /// The rectangular whole-cell selection (M3.WP8, spec §5.4) forwarded from the owning
+    /// <see cref="TablePresenter"/>. When it covers this row (<see cref="CellRect.ContainsRow"/>), every selected
+    /// cell highlights as a FULL cell (the whole column width incl. padding), overriding the WP5 per-cell text
+    /// highlight for that row; otherwise the <see cref="SelectionProvider"/> text highlight is used. The interior
+    /// dividers between selected cells are deliberately <b>left as normal border glyphs</b> (the rect reads as
+    /// highlighted cell-boxes with gridlines between — the spreadsheet-block convention), consistent on both wire
+    /// presets. <see langword="null"/> ⇒ no cell-rect active.
+    /// </summary>
+    internal Func<CellRect?>? CellRectProvider { get; set; }
+
     public TableRowPresenter(TableModel model, TableGridMetrics metrics, string blockText, int logicalRow, TableOverflow overflow = TableOverflow.Wrap)
     {
         _model = model;
@@ -179,6 +190,12 @@ internal sealed class TableRowPresenter : UIElement
         var headerStyle = CellStyle.Default.WithAttributes(TextAttributes.Bold);
         var selection = ResolveSelection(context);
 
+        // The cell-rect (M3.WP8): when the multi-cell selection covers THIS row, its cells highlight as WHOLE
+        // cells (below), overriding the WP5 per-cell text highlight; otherwise the text highlight is used.
+        var rect = CellRectProvider?.Invoke();
+        bool rowInRect = rect is { } rc && rc.ContainsRow(_logicalRow)
+            && rc.Col0 <= rc.Col1 && rc.Col0 < _metrics.ColumnCount && rc.Col1 >= 0;
+
         // The column-window (M3.WP6): the whole grid draws translated left by `offset` cells and clipped to
         // `drawWidth` (≤ viewport). Non-overflowing tables get (0, gridWidth) — the pre-WP6 behaviour verbatim.
         var (offset, drawWidth) = ResolveWindow();
@@ -189,6 +206,12 @@ internal sealed class TableRowPresenter : UIElement
 
             if (line is { Kind: TableLineKind.Content, IsHeader: true } && drawWidth > 0)
                 context.FillRectangle(new Rect(0, row, drawWidth, 1), headerFill); // header fill under the glyphs
+
+            // Whole-cell rect fill (M3.WP8): before the glyphs, paint the full box (padding incl.) of each selected
+            // cell on this content row — the SelectionBrush fill (colour) or Inverse spaces (NoColor) — so an empty
+            // cell and the cell padding carry the highlight too. Interior dividers stay normal border glyphs.
+            if (rowInRect && line.Kind == TableLineKind.Content && selection.Active)
+                FillRectCells(context, row, rect!.Value, offset, drawWidth, foreground, selection);
 
             foreach (var run in line.Runs)
             {
@@ -202,9 +225,16 @@ internal sealed class TableRowPresenter : UIElement
                 {
                     if (run.Glyph is { Length: > 0 } glyph)
                     {
-                        // The truncation … rides the content colour; box-drawing glyphs (│ ┼ ─ …) are structure.
-                        var brush = string.Equals(glyph, TableBox.Ellipsis, StringComparison.Ordinal) ? foreground : borderBrush;
-                        context.DrawText(col, row, glyph, brush, null, CellStyle.Default);
+                        // The truncation … rides the content colour; box-drawing glyphs (│ ┼ ─) are structure.
+                        bool isEllipsis = string.Equals(glyph, TableBox.Ellipsis, StringComparison.Ordinal);
+                        var brush = isEllipsis ? foreground : borderBrush;
+                        // The … sits inside a cell, so under a rect on NoColor it rides the whole-cell Inverse like
+                        // the cell text (else it re-draws plain over the Inverse box and reads unselected). Dividers
+                        // stay plain — they are never highlighted.
+                        var glyphStyle = isEllipsis && rowInRect && selection.NoColor && InRectColumns(run.Col, rect!.Value)
+                            ? CellStyle.Default.AddAttributes(TextAttributes.Inverse)
+                            : CellStyle.Default;
+                        context.DrawText(col, row, glyph, brush, null, glyphStyle);
                     }
 
                     continue;
@@ -218,15 +248,84 @@ internal sealed class TableRowPresenter : UIElement
                     continue;
 
                 var style = line.IsHeader ? headerStyle : CellStyle.Default;
-                DrawCellText(context, col, row, slice, run.SrcStart, foreground, style, selection);
+
+                if (rowInRect)
+                {
+                    // The rect owns the whole selection: a cell inside the rectangle's columns draws over the fill
+                    // (colour) or with Inverse (NoColor); a non-rect column on a rect row is unselected → plain.
+                    if (InRectColumns(run.Col, rect!.Value) && selection.NoColor)
+                        context.DrawText(col, row, slice, foreground, null, style.AddAttributes(TextAttributes.Inverse));
+                    else
+                        context.DrawText(col, row, slice, foreground, null, style);
+                }
+                else
+                {
+                    DrawCellText(context, col, row, slice, run.SrcStart, foreground, style, selection);
+                }
             }
 
             // Truncate reveal-on-focus (§5.6): the focused cell re-draws its FULL content on top of the truncated
             // base, overflowing into the cells to its right on this content row (spreadsheet-style) but clipped
             // before the grid's right border. Non-focused cells stay truncated; a caret move re-rasters this zone.
             if (_overflow == TableOverflow.Truncate && _activeColumn >= 0 && line.Kind == TableLineKind.Content)
-                DrawActiveReveal(context, row, offset, drawWidth, line.IsHeader ? headerStyle : CellStyle.Default, foreground, selection);
+            {
+                // Under a rect the reveal is drawn over the whole-cell highlight: on the COLOUR tier plain text over
+                // the SelectionBrush fill (the null-background text lets the fill show), so `default` suffices; on
+                // NoColor there is no fill, so a REVEALED cell INSIDE the rect columns must draw its content Inverse
+                // (a full-content cover selection) to match the box — a focused cell outside the rect is unselected.
+                // Outside a rect the WP5 range highlight is passed as before.
+                CellSelection revealSel = !rowInRect
+                    ? selection
+                    : selection.NoColor && _activeColumn >= rect!.Value.Col0 && _activeColumn <= rect.Value.Col1
+                        ? FullCellSelection(_activeColumn, selection)
+                        : default;
+                DrawActiveReveal(context, row, offset, drawWidth, line.IsHeader ? headerStyle : CellStyle.Default, foreground, revealSel);
+            }
         }
+    }
+
+    /// <summary>A <see cref="CellSelection"/> covering the whole content of cell (<see cref="_logicalRow"/>, <paramref name="column"/>) — so the Truncate reveal of a rect cell highlights its full revealed content (Inverse on NoColor), matching the whole-cell box.</summary>
+    private CellSelection FullCellSelection(int column, in CellSelection selection)
+    {
+        var (start, end) = _model.CellContentRange(_logicalRow, column);
+        return new CellSelection(start, end, selection.NoColor, selection.Brush);
+    }
+
+    /// <summary>
+    /// Paints the whole-cell highlight (M3.WP8) for each selected cell on content grid row <paramref name="drawRow"/>:
+    /// the full box <c>[BorderX(c)+1, BorderX(c+1))</c> — the left padding, content, and right padding of columns
+    /// <c>[Col0..Col1]</c> — translated into the column-window and clipped to <paramref name="drawWidth"/>. On the
+    /// colour tier it fills with the <see cref="ThemeKeys.SelectionBrush"/>; on NoColor it draws Inverse spaces so
+    /// the padding carries the highlight (the cell text is then re-drawn Inverse in the run loop). Interior dividers
+    /// are left untouched (normal border glyphs), so the rect reads as highlighted boxes with gridlines between.
+    /// </summary>
+    private void FillRectCells(RenderContext context, int drawRow, CellRect rect, int offset, int drawWidth, IBrush foreground, in CellSelection selection)
+    {
+        int first = Math.Max(0, rect.Col0);
+        int last = Math.Min(_metrics.ColumnCount - 1, rect.Col1);
+        for (var c = first; c <= last; c++)
+        {
+            int x0 = Math.Max(0, _metrics.BorderX(c) + 1 - offset);       // just past the left divider
+            int x1 = Math.Min(drawWidth, _metrics.BorderX(c + 1) - offset); // up to (excl.) the right divider
+            int w = x1 - x0;
+            if (w <= 0)
+                continue;
+
+            if (selection.NoColor)
+                context.DrawText(x0, drawRow, Repeat(" ", w), foreground, null, CellStyle.Default.AddAttributes(TextAttributes.Inverse));
+            else if (selection.Brush is { } brush)
+                context.FillRectangle(new Rect(x0, drawRow, w, 1), brush);
+        }
+    }
+
+    /// <summary>Whether a text run at grid column <paramref name="runCol"/> falls inside the cell-rect's columns <c>[Col0..Col1]</c> (its content region, alignment-agnostic).</summary>
+    private bool InRectColumns(int runCol, CellRect rect)
+    {
+        int first = Math.Max(0, rect.Col0);
+        int last = Math.Min(_metrics.ColumnCount - 1, rect.Col1);
+        if (first > last)
+            return false;
+        return runCol >= _metrics.ContentX(first) && runCol < _metrics.ContentX(last) + _metrics.ColumnWidth(last);
     }
 
     /// <summary>The window (<c>Offset</c>, <c>DrawWidth</c>) this row draws through, or the whole grid when no column-window is active.</summary>

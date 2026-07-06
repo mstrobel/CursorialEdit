@@ -262,6 +262,11 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         // it works whether the caret attaches before or after the block realizes.
         presenter.SelectionProvider = () => SelectionSource?.GetSelection(id);
 
+        // A table additionally reads the rectangular whole-cell selection (M3.WP8, spec §5.4): when the multi-cell
+        // selection lies wholly within this table, its cells highlight as whole cells instead of the covered span.
+        if (presenter is TablePresenter tablePresenter)
+            tablePresenter.CellRectProvider = () => SelectionSource?.GetCellRect(id);
+
         if (presenter is FrontMatterPresenter frontMatter)
         {
             void OnFold() => OnBlockHeightChanged(id);

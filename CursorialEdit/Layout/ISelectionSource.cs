@@ -17,4 +17,15 @@ public interface ISelectionSource
     /// range, or <see langword="null"/> when the selection is empty or does not touch the block.
     /// </summary>
     (int Start, int End)? GetSelection(BlockId block);
+
+    /// <summary>
+    /// The rectangular whole-cell selection (M3.WP8, spec §5.4) when <paramref name="block"/> is a table whose
+    /// two selection ends fall in <b>different cells of that same table</b>, or <see langword="null"/> otherwise —
+    /// a single-cell selection (the ordinary in-cell text selection, drawn via <see cref="GetSelection"/>) and a
+    /// selection that leaves the table (an ordinary document selection — the transition rule) both return
+    /// <see langword="null"/>. A table presenter reads this to highlight <b>whole cells</b> instead of the covered
+    /// source span; when it is <see langword="null"/> the presenter falls back to the <see cref="GetSelection"/>
+    /// per-cell text highlight.
+    /// </summary>
+    CellRect? GetCellRect(BlockId block);
 }

@@ -587,6 +587,9 @@ internal sealed class DocumentCaret : ISelectionSource
     /// <summary>Printable input: inserts at the caret, or replaces the selection (<see cref="EditKind.Typing"/>). Inside a table cell it routes through <see cref="TableEditingController"/> (pipe escaping, empty-cell padding, cell-clamped over a selection).</summary>
     public void InsertText(string text)
     {
+        if (HasSelection && TryReplaceCellRect(text, collapseBreaks: false))
+            return; // typing over a cell-rect clears it and lands the text in the top-left cell (M3.WP8)
+
         if (TryTableContext(out var model, out int blockStart))
         {
             if (HasSelection)
@@ -636,6 +639,9 @@ internal sealed class DocumentCaret : ISelectionSource
     /// </summary>
     public void Backspace()
     {
+        if (HasSelection && TryReplaceCellRect(string.Empty, collapseBreaks: false))
+            return; // Backspace over a cell-rect clears every selected cell (M3.WP8)
+
         if (TryTableContext(out var model, out int blockStart))
         {
             if (HasSelection)
@@ -679,6 +685,9 @@ internal sealed class DocumentCaret : ISelectionSource
     /// </summary>
     public void DeleteForward()
     {
+        if (HasSelection && TryReplaceCellRect(string.Empty, collapseBreaks: false))
+            return; // Delete over a cell-rect clears every selected cell (M3.WP8)
+
         if (TryTableContext(out var model, out int blockStart))
         {
             if (HasSelection)
@@ -748,6 +757,11 @@ internal sealed class DocumentCaret : ISelectionSource
         if (!HasSelection)
             return null;
 
+        // A rectangular whole-cell selection copies as the corresponding GFM SUB-TABLE (spec §5.4), not the raw
+        // covered source range; a single-cell / ordinary selection copies its verbatim source as before.
+        if (CurrentCellRect() is { } r)
+            return TableEditingController.SubTableMarkdown(r.Model, r.Rect);
+
         var (start, end) = NormalizedSelection();
         return _buffer.GetText(start, end);
     }
@@ -761,8 +775,15 @@ internal sealed class DocumentCaret : ISelectionSource
     /// </summary>
     public void DeleteSelection()
     {
-        if (HasSelection)
-            ReplaceSelectionOrInsert(string.Empty, EditKind.Structural);
+        if (!HasSelection)
+            return;
+
+        // Cut over a cell-rect clears every selected cell as one structural undo group (M3.WP8); an ordinary
+        // selection removes its source range verbatim.
+        if (TryReplaceCellRect(string.Empty, collapseBreaks: false))
+            return;
+
+        ReplaceSelectionOrInsert(string.Empty, EditKind.Structural);
     }
 
     /// <summary>
@@ -781,6 +802,9 @@ internal sealed class DocumentCaret : ISelectionSource
 
         if (text.Length == 0)
             return;
+
+        if (HasSelection && TryReplaceCellRect(text, collapseBreaks: true))
+            return; // paste over a cell-rect clears it and lands the payload in the top-left cell (M3.WP8)
 
         if (TryTableContext(out var model, out int blockStart))
         {
@@ -1030,6 +1054,69 @@ internal sealed class DocumentCaret : ISelectionSource
         int from = Math.Max(selStart, blockStart);
         int to = Math.Min(selEnd, BlockEndOffset(index));
         return to > from ? (from - blockStart, to - blockStart) : null;
+    }
+
+    /// <inheritdoc/>
+    public CellRect? GetCellRect(BlockId block)
+    {
+        if (CurrentCellRect() is not { } r)
+            return null;
+
+        return Blocks.IndexOf(block) == r.BlockIndex ? r.Rect : null;
+    }
+
+    /// <summary>
+    /// The active <b>cell-rect</b> (M3.WP8, spec §5.4) when a selection's anchor and active caret fall in
+    /// <b>different cells of the same table block</b> — the block index, its live overlay, its absolute start
+    /// offset, and the normalized whole-cell rectangle. <see langword="null"/> when there is no selection, when
+    /// the two ends are in different blocks (the selection left the table — an ordinary document selection, the
+    /// transition rule), when the caret's block is not a table, or when both ends are in the <b>same</b> cell (an
+    /// ordinary in-cell text selection, WP5). The engagement rule for rendering (<see cref="GetCellRect"/>), copy
+    /// (<see cref="SelectedText"/>), and delete/clear (<see cref="TryReplaceCellRect"/>) — all read it, so the
+    /// three agree by construction.
+    /// </summary>
+    private (int BlockIndex, TableModel Model, int BlockStart, CellRect Rect)? CurrentCellRect()
+    {
+        if (_anchor is not { } anchor || anchor == _position)
+            return null;
+
+        int anchorBlock = Blocks.IndexOfLine(anchor.Line);
+        int activeBlock = Blocks.IndexOfLine(_position.Line);
+        if (anchorBlock != activeBlock)
+            return null; // the selection spans out of the table → an ordinary document selection (transition rule)
+
+        if (_host.GetTableModel(anchorBlock) is not { } model)
+            return null; // not a table (or raw mode, where GetTableModel returns null)
+
+        // Both ends must sit on an actual table ROW line — not the delimiter line nor an absorbed trailing blank
+        // line the table block swallowed (symmetric with the collapsed-caret CaretOnTableRow rule, bug 5), so a
+        // selection whose end drifted off the rows is an ordinary document selection, never a cell-rect.
+        int startLine = Blocks.GetStartLine(anchorBlock);
+        if (!model.HasRowOnLine(anchor.Line - startLine) || !model.HasRowOnLine(_position.Line - startLine))
+            return null;
+
+        int blockStart = BlockStartOffset(anchorBlock);
+        int anchorRel = _buffer.GetOffset(anchor) - blockStart;
+        int activeRel = _buffer.GetOffset(_position) - blockStart;
+        if (model.CellRectOfRange(anchorRel, activeRel) is not { } rect)
+            return null; // both ends in the same cell → an ordinary in-cell text selection (WP5)
+
+        return (anchorBlock, model, blockStart, rect);
+    }
+
+    /// <summary>
+    /// Routes a destructive edit over a cell-rect to the multi-cell clear/replace splice (M3.WP8): a rect Delete /
+    /// Clear / Cut passes <c>text = ""</c> (every selected cell empties); a type/paste over the rect passes the
+    /// text (it lands in the top-left cell). One sealed structural undo group. Returns <see langword="false"/> when
+    /// no cell-rect is active, so the caller falls through to its ordinary (single-cell / document) path.
+    /// </summary>
+    private bool TryReplaceCellRect(string text, bool collapseBreaks)
+    {
+        if (CurrentCellRect() is not { } r)
+            return false;
+
+        RunTableCommand(_table.ReplaceCellRect(r.Model, r.BlockStart, r.Rect, text, collapseBreaks));
+        return true;
     }
 
     // ───────────────────────────── state transitions ─────────────────────────────

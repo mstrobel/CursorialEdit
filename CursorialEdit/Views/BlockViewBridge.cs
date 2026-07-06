@@ -214,6 +214,11 @@ public sealed class BlockViewBridge : IEditorViewSource, IBlockRunMapSource, ISe
     /// </remarks>
     public (int Start, int End)? GetSelection(BlockId block) => SelectionSource?.GetSelection(block);
 
+    /// <inheritdoc/>
+    /// <remarks>The plain-text surface has no tables, so a cell-rect never arises — it passes through to the
+    /// selection source, which returns <see langword="null"/> for a non-table block regardless.</remarks>
+    public CellRect? GetCellRect(BlockId block) => SelectionSource?.GetCellRect(block);
+
     // ───────────────────────────── presenter factory + registry ─────────────────────────────
 
     /// <summary>

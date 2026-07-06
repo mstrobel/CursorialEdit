@@ -1,4 +1,5 @@
 using Cursorial.Input;
+using Cursorial.Input.Events;
 using Cursorial.Output;
 using Cursorial.Rendering;
 using Cursorial.UI.Testing;
@@ -108,6 +109,32 @@ internal sealed class MarkdownEditingHarness : IDisposable
     public void Click(int column, int row, int clickCount = 1)
     {
         Host.SendClick(column, row, MouseButton.Left, clickCount);
+        Settle();
+    }
+
+    /// <summary>A press-move-release drag between two window cells (the capture-extend gesture) — a mouse selection.</summary>
+    public void Drag(int fromColumn, int fromRow, int toColumn, int toRow)
+    {
+        Host.SendInput(new MouseEvent
+        {
+            Kind = MouseEventKind.ButtonDown,
+            Position = new CellPosition(fromColumn, fromRow),
+            Button = MouseButton.Left,
+            ButtonsHeld = MouseButtons.None,
+            Modifiers = KeyModifiers.None,
+            ClickCount = 1,
+            Timestamp = Host.Time.GetUtcNow(),
+        });
+        Host.SendMouseMove(toColumn, toRow);
+        Host.SendInput(new MouseEvent
+        {
+            Kind = MouseEventKind.ButtonUp,
+            Position = new CellPosition(toColumn, toRow),
+            Button = MouseButton.Left,
+            ButtonsHeld = MouseButtons.None,
+            Modifiers = KeyModifiers.None,
+            Timestamp = Host.Time.GetUtcNow(),
+        });
         Settle();
     }
 
