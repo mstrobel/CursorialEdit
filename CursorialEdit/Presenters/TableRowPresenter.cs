@@ -249,19 +249,14 @@ internal sealed class TableRowPresenter : UIElement
 
                 var style = line.IsHeader ? headerStyle : CellStyle.Default;
 
-                if (rowInRect)
-                {
-                    // The rect owns the whole selection: a cell inside the rectangle's columns draws over the fill
-                    // (colour) or with Inverse (NoColor); a non-rect column on a rect row is unselected → plain.
-                    if (InRectColumns(run.Col, rect!.Value) && selection.NoColor)
-                        context.DrawText(col, row, slice, foreground, null, style.AddAttributes(TextAttributes.Inverse));
-                    else
-                        context.DrawText(col, row, slice, foreground, null, style);
-                }
-                else
-                {
-                    DrawCellText(context, col, row, slice, run.SrcStart, foreground, style, selection);
-                }
+                // The rect (M3.WP8) owns the whole selection: a run in a rect column draws as a WHOLE-cell selection
+                // — routed through DrawCellText so the colour/NoColor decision lives in ONE place (fill-background on
+                // colour, Inverse on NoColor), covering the run's full source span; a non-rect column on a rect row
+                // is unselected (default). Outside a rect the WP5 range highlight is passed straight through.
+                var cellSelection = rowInRect
+                    ? InRectColumns(run.Col, rect!.Value) ? CoverRun(run, selection) : default
+                    : selection;
+                DrawCellText(context, col, row, slice, run.SrcStart, foreground, style, cellSelection);
             }
 
             // Truncate reveal-on-focus (§5.6): the focused cell re-draws its FULL content on top of the truncated
@@ -269,27 +264,28 @@ internal sealed class TableRowPresenter : UIElement
             // before the grid's right border. Non-focused cells stay truncated; a caret move re-rasters this zone.
             if (_overflow == TableOverflow.Truncate && _activeColumn >= 0 && line.Kind == TableLineKind.Content)
             {
-                // Under a rect the reveal is drawn over the whole-cell highlight: on the COLOUR tier plain text over
-                // the SelectionBrush fill (the null-background text lets the fill show), so `default` suffices; on
-                // NoColor there is no fill, so a REVEALED cell INSIDE the rect columns must draw its content Inverse
-                // (a full-content cover selection) to match the box — a focused cell outside the rect is unselected.
-                // Outside a rect the WP5 range highlight is passed as before.
-                CellSelection revealSel = !rowInRect
-                    ? selection
-                    : selection.NoColor && _activeColumn >= rect!.Value.Col0 && _activeColumn <= rect.Value.Col1
-                        ? FullCellSelection(_activeColumn, selection)
-                        : default;
-                DrawActiveReveal(context, row, offset, drawWidth, line.IsHeader ? headerStyle : CellStyle.Default, foreground, revealSel);
+                // Under a rect the reveal of a SELECTED cell carries the whole-cell highlight, but CLIPPED to the
+                // cell's own box: its rightward overflow into neighbours draws plain, so a neighbour outside the rect
+                // is never painted selected (on NoColor the overflow would otherwise render Inverse across it; on
+                // colour it stays plain either way, the box fill showing through). A focused cell outside the rect
+                // columns is unselected. Outside a rect the WP5 range highlight is passed as before.
+                bool cellInRect = rowInRect && rect!.Value.Contains(_logicalRow, _activeColumn);
+                CellSelection revealSel = cellInRect ? FullCellSelection(_activeColumn, selection) : rowInRect ? default : selection;
+                DrawActiveReveal(context, row, offset, drawWidth, line.IsHeader ? headerStyle : CellStyle.Default, foreground, revealSel, clipToBox: cellInRect);
             }
         }
     }
 
-    /// <summary>A <see cref="CellSelection"/> covering the whole content of cell (<see cref="_logicalRow"/>, <paramref name="column"/>) — so the Truncate reveal of a rect cell highlights its full revealed content (Inverse on NoColor), matching the whole-cell box.</summary>
+    /// <summary>A <see cref="CellSelection"/> covering the whole content of cell (<see cref="_logicalRow"/>, <paramref name="column"/>) — so the Truncate reveal of a rect cell highlights its revealed content (Inverse on NoColor), clipped to the cell's box by the caller.</summary>
     private CellSelection FullCellSelection(int column, in CellSelection selection)
     {
         var (start, end) = _model.CellContentRange(_logicalRow, column);
         return new CellSelection(start, end, selection.NoColor, selection.Brush);
     }
+
+    /// <summary>A <see cref="CellSelection"/> covering the whole of <paramref name="run"/>'s source span (M3.WP8) — a rect cell's content is drawn wholly selected via <see cref="DrawCellText"/>, so the colour/NoColor decoration is decided in one place.</summary>
+    private static CellSelection CoverRun(Run run, in CellSelection selection)
+        => new(run.SrcStart, run.SrcStart + run.SrcLen, selection.NoColor, selection.Brush);
 
     /// <summary>
     /// Paints the whole-cell highlight (M3.WP8) for each selected cell on content grid row <paramref name="drawRow"/>:
@@ -341,7 +337,7 @@ internal sealed class TableRowPresenter : UIElement
     /// clipped just short of the grid's right border so the outer box survives. The caret map reports this same
     /// natural geometry, so the caret lands on the revealed grapheme; the selection composes in as everywhere else.
     /// </summary>
-    private void DrawActiveReveal(RenderContext context, int drawRow, int offset, int drawWidth, CellStyle style, IBrush foreground, in CellSelection selection)
+    private void DrawActiveReveal(RenderContext context, int drawRow, int offset, int drawWidth, CellStyle style, IBrush foreground, in CellSelection selection, bool clipToBox = false)
     {
         var (start, end) = _model.CellContentRange(_logicalRow, _activeColumn);
         if (end <= start)
@@ -375,8 +371,37 @@ internal sealed class TableRowPresenter : UIElement
             visLen += clusters.Current.Length;
         }
 
-        if (visLen > 0)
-            DrawCellText(context, startCol, drawRow, content[..visLen], start, foreground, style, selection);
+        if (visLen <= 0)
+            return;
+
+        // Under a rect (clipToBox), scope the SELECTED decoration to the focused cell's own column box: only the
+        // first ColumnWidth cells of content sit in the box, so the reveal's overflow past it draws plain and never
+        // paints a neighbour cell selected (M3.WP8 — the NoColor Inverse would otherwise bleed across neighbours).
+        var revealSelection = selection;
+        if (clipToBox && selection.Active)
+        {
+            int boxPrefix = PrefixLengthFitting(content, _metrics.ColumnWidth(_activeColumn));
+            revealSelection = selection with { End = Math.Min(selection.End, start + boxPrefix) };
+        }
+
+        DrawCellText(context, startCol, drawRow, content[..visLen], start, foreground, style, revealSelection);
+    }
+
+    /// <summary>The UTF-16 length of the longest whole-grapheme-cluster prefix of <paramref name="text"/> whose display width fits <paramref name="width"/> cells (never splitting a wide cluster).</summary>
+    private static int PrefixLengthFitting(ReadOnlySpan<char> text, int width)
+    {
+        int used = 0, len = 0;
+        var clusters = text.GetGraphemeEnumerator();
+        while (clusters.MoveNext())
+        {
+            int w = GraphemeWidth.StringWidth(clusters.Current);
+            if (used + w > width)
+                break;
+            used += w;
+            len += clusters.Current.Length;
+        }
+
+        return len;
     }
 
     // ───────────────────────────── selection highlight (WP4-deferred #2) ─────────────────────────────

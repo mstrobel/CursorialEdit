@@ -87,6 +87,11 @@ internal sealed class DocumentCaret : ISelectionSource
     /// </summary>
     private readonly Dictionary<BlockId, (int Start, int End)> _selectionPainted = [];
 
+    /// <summary>The memoized <see cref="CurrentCellRect"/> result (M3.WP8) — cached because it is queried once per
+    /// table row on every render; recomputed only when <see cref="_cellRectValid"/> is cleared by a state change.</summary>
+    private (int BlockIndex, TableModel Model, int BlockStart, CellRect Rect)? _cellRect;
+    private bool _cellRectValid;
+
     /// <summary>Creates the caret at the document origin.</summary>
     public DocumentCaret(EditController controller, IEditorViewSource host, IContentRowMap rows)
     {
@@ -758,9 +763,15 @@ internal sealed class DocumentCaret : ISelectionSource
             return null;
 
         // A rectangular whole-cell selection copies as the corresponding GFM SUB-TABLE (spec §5.4), not the raw
-        // covered source range; a single-cell / ordinary selection copies its verbatim source as before.
+        // covered source range; a single-cell / ordinary selection copies its verbatim source as before. The
+        // sub-table uses the document's PREVAILING line ending (the table's always-terminated header row), so a
+        // rect-copy from a CRLF document round-trips CRLF instead of collapsing to lone LFs (the WP7 fidelity rule).
         if (CurrentCellRect() is { } r)
-            return TableEditingController.SubTableMarkdown(r.Model, r.Rect);
+        {
+            int headerAbs = Blocks.GetStartLine(r.BlockIndex) + r.Model.RowSourceLine(0);
+            string ending = _buffer.GetLine(headerAbs).EndingText;
+            return TableEditingController.SubTableMarkdown(r.Model, r.Rect, ending.Length > 0 ? ending : "\n");
+        }
 
         var (start, end) = NormalizedSelection();
         return _buffer.GetText(start, end);
@@ -1072,36 +1083,46 @@ internal sealed class DocumentCaret : ISelectionSource
     /// the two ends are in different blocks (the selection left the table — an ordinary document selection, the
     /// transition rule), when the caret's block is not a table, or when both ends are in the <b>same</b> cell (an
     /// ordinary in-cell text selection, WP5). The engagement rule for rendering (<see cref="GetCellRect"/>), copy
-    /// (<see cref="SelectedText"/>), and delete/clear (<see cref="TryReplaceCellRect"/>) — all read it, so the
-    /// three agree by construction.
+    /// (<see cref="SelectedText"/>), and delete/clear (<see cref="TryReplaceCellRect"/>) all read it, so the three
+    /// agree by construction. <b>Memoized</b> per state: it is called once per table row on every render, so the
+    /// result is cached and only recomputed after a caret/selection/edit change (invalidated in
+    /// <see cref="AfterStateChange"/>) — the two <c>CellOfOffset</c> scans do not re-run per row.
     /// </summary>
     private (int BlockIndex, TableModel Model, int BlockStart, CellRect Rect)? CurrentCellRect()
+    {
+        if (!_cellRectValid)
+        {
+            _cellRect = ComputeCellRect();
+            _cellRectValid = true;
+        }
+
+        return _cellRect;
+    }
+
+    private (int BlockIndex, TableModel Model, int BlockStart, CellRect Rect)? ComputeCellRect()
     {
         if (_anchor is not { } anchor || anchor == _position)
             return null;
 
-        int anchorBlock = Blocks.IndexOfLine(anchor.Line);
-        int activeBlock = Blocks.IndexOfLine(_position.Line);
-        if (anchorBlock != activeBlock)
-            return null; // the selection spans out of the table → an ordinary document selection (transition rule)
-
-        if (_host.GetTableModel(anchorBlock) is not { } model)
-            return null; // not a table (or raw mode, where GetTableModel returns null)
-
-        // Both ends must sit on an actual table ROW line — not the delimiter line nor an absorbed trailing blank
-        // line the table block swallowed (symmetric with the collapsed-caret CaretOnTableRow rule, bug 5), so a
-        // selection whose end drifted off the rows is an ordinary document selection, never a cell-rect.
-        int startLine = Blocks.GetStartLine(anchorBlock);
-        if (!model.HasRowOnLine(anchor.Line - startLine) || !model.HasRowOnLine(_position.Line - startLine))
+        // The active caret must sit in a table cell ROW — reuse the collapsed-caret table-context helpers, which
+        // already encapsulate caret-line → block → model → HasRowOnLine (and return null in raw mode / off a row,
+        // e.g. the delimiter or an absorbed trailing blank line, bug 5).
+        if (!TryTableContext(out var model, out int blockStart) || !CaretOnTableRow(model))
             return null;
 
-        int blockStart = BlockStartOffset(anchorBlock);
+        // The anchor must be in the SAME block AND on an actual row line, else the selection left the table and
+        // stays an ordinary document selection (the transition rule).
+        int blockIndex = Blocks.IndexOfLine(_position.Line);
+        int startLine = Blocks.GetStartLine(blockIndex);
+        if (Blocks.IndexOfLine(anchor.Line) != blockIndex || !model.HasRowOnLine(anchor.Line - startLine))
+            return null;
+
         int anchorRel = _buffer.GetOffset(anchor) - blockStart;
         int activeRel = _buffer.GetOffset(_position) - blockStart;
         if (model.CellRectOfRange(anchorRel, activeRel) is not { } rect)
             return null; // both ends in the same cell → an ordinary in-cell text selection (WP5)
 
-        return (anchorBlock, model, blockStart, rect);
+        return (blockIndex, model, blockStart, rect);
     }
 
     /// <summary>
@@ -1115,7 +1136,18 @@ internal sealed class DocumentCaret : ISelectionSource
         if (CurrentCellRect() is not { } r)
             return false;
 
-        RunTableCommand(_table.ReplaceCellRect(r.Model, r.BlockStart, r.Rect, text, collapseBreaks));
+        var command = _table.ReplaceCellRect(r.Model, r.BlockStart, r.Rect, text, collapseBreaks);
+        if (command.IsNoOp)
+        {
+            // Nothing to clear (the rect is already all-empty and there is no text to insert) — but a Delete /
+            // Backspace / Cut over a selection must still COLLAPSE it to a caret, never read as a dead key. Land in
+            // the rect's top-left cell, mirroring the multi-cell clear's caret.
+            var caret = _buffer.GetPosition(r.BlockStart + r.Model.CellEntryOffset(r.Rect.Row0, r.Rect.Col0));
+            MoveTo(caret, extend: false, endAffinity: false);
+            return true;
+        }
+
+        RunTableCommand(command);
         return true;
     }
 
@@ -1213,6 +1245,8 @@ internal sealed class DocumentCaret : ISelectionSource
 
     private void AfterStateChange()
     {
+        _cellRectValid = false; // the caret/selection/document moved — the memoized cell-rect (M3.WP8) is stale
+
         // Reveal-on-edit: the surface reveals the caret's active line and re-hides the prior block's
         // marks (markdown); the plain surface no-ops. Done before the owner republishes so the caret
         // publishes through the revealed, slid map.

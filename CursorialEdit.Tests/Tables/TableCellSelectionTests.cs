@@ -257,6 +257,76 @@ public sealed class TableCellSelectionTests
             "the revealed over-wide rect cell must stay Inverse on NoColor (not redrawn plain over the box)");
     }
 
+    // ───────────────────────────── review regressions ─────────────────────────────
+
+    [Fact]
+    public void CopyCellRect_FromCrlfDocument_UsesCrlfBetweenRows()
+    {
+        // Review bug 1: SubTableMarkdown defaulted to "\n", so a rect-copy from a CRLF document produced mixed
+        // endings. It must carry the document's prevailing ending (verbatim copy is byte-exact; the rect copy too).
+        using var h = MarkdownEditingHarness.Create("| AB | CD |\r\n|---|---|\r\n| ef | gh |\r\n", columns: 40, rows: 12);
+
+        h.Drag(2, ContentRow(0), 9, ContentRow(1));
+        h.Chord('c', KeyModifiers.Control);
+
+        Assert.Equal("| AB | CD |\r\n| --- | --- |\r\n| ef | gh |", h.Editor.Clipboard.Text);
+    }
+
+    [Fact]
+    public void DeleteOverAllEmptyCellRect_CollapsesTheSelection_NotADeadKey()
+    {
+        // Review bug 2: an all-empty rect Delete is a NoOp splice, but the key must still COLLAPSE the selection to
+        // a caret (like deleting any selection) instead of reading dead and leaving the rect highlighted.
+        using var h = MarkdownEditingHarness.Create("| a | b |\n|---|---|\n|  |  |\n", columns: 40, rows: 12);
+
+        h.Drag(2, ContentRow(1), 8, ContentRow(1)); // the two empty body cells (1,0)-(1,1)
+        Assert.NotNull(h.Bridge.SelectionSource!.GetCellRect(h.Blocks[0].Id));
+        Assert.True(h.Caret.HasSelection);
+
+        h.Key(Key.Delete);
+
+        Assert.False(h.Caret.HasSelection);         // collapsed to a caret — not a dead key
+        Assert.Equal((1, 0), CellOf(h));            // in the rect's top-left cell
+        Assert.Equal("|  |  |", h.Buffer.GetLine(2).Text); // structure unchanged (nothing to clear)
+    }
+
+    [Fact]
+    public void TypingOverCellRect_EmptyTopLeftCell_PadsLikeAnIntraCellInsert()
+    {
+        // Review bug 4: typing into an EMPTY top-left cell of a rect must pad to "| X |" (like the WP4 empty-cell
+        // insert), not splice unpadded at the bare anchor ("|X  |").
+        using var h = MarkdownEditingHarness.Create("|  | b |\n|---|---|\n| c | d |\n", columns: 40, rows: 12);
+
+        h.Drag(2, ContentRow(0), 2, ContentRow(1)); // rect over column 0 (rows 0-1); top-left (0,0) is EMPTY
+        h.Type("X");
+
+        Assert.Equal("| X | b |", h.Buffer.GetLine(0).Text); // padded — not "|X  | b |"
+        Assert.Equal("|  | d |", h.Buffer.GetLine(2).Text);  // the other rect cell cleared, column 1 preserved
+        Assert.Equal("X", Model(h).CellContent(0, 0));
+    }
+
+    [Fact]
+    public void CellRect_NoColorTruncateReveal_DoesNotPaintNonSelectedNeighbor()
+    {
+        // Review bug 3: the focused rect cell's revealed content overflowed rightward and painted a NON-selected
+        // neighbour column Inverse on NoColor. The Inverse must be clipped to the focused cell's own box.
+        using var h = MarkdownEditingHarness.Create(
+            "| " + new string('a', 20) + " | b |\n|---|---|\n| c | d |\n",
+            TestSupport.CapabilityPresets.NoColor, columns: 16, rows: 12);
+        h.Bridge.OverflowMode = TableOverflow.Truncate;
+        h.Settle();
+
+        // Rect over column 0 only (rows 0-1); the active (focused) end is the over-wide header cell (0,0), which
+        // reveals full content overflowing right into column 1 — which is NOT selected.
+        h.Drag(2, ContentRow(1), 2, ContentRow(0));
+        Assert.NotNull(h.Bridge.SelectionSource!.GetCellRect(h.Blocks[0].Id));
+
+        Assert.True(h.AttributesAt(2, ContentRow(0)).HasFlag(TextAttributes.Inverse),
+            "the focused rect cell's own box stays Inverse");
+        Assert.False(h.AttributesAt(11, ContentRow(0)).HasFlag(TextAttributes.Inverse),
+            "the reveal's overflow must NOT paint the non-selected column-1 neighbour Inverse");
+    }
+
     // ───────────────────────────── 5. the transition rule (selection leaving the table) ─────────────────────────────
 
     [Fact]

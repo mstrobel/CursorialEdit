@@ -270,48 +270,66 @@ public sealed class TableEditingController
     /// </summary>
     public TableCommand ReplaceCellRect(TableModel model, int blockStart, CellRect rect, string text, bool collapseBreaks)
     {
-        // The top-left cell is the earliest selected cell in source order and the bottom-right the latest, so their
-        // content bounds delimit the whole contiguous span covering the rectangle (row-major, columns left-to-right).
-        int spanStart = model.CellContentRange(rect.Row0, rect.Col0).Start;
+        string sanitized = Sanitize(text ?? string.Empty, collapseBreaks, precedingBackslashes: 0);
+
+        // The top-left cell takes the inserted text: a non-empty cell replaces its trimmed content in place (its
+        // surrounding padding kept), while an EMPTY cell being typed into pads to "│ text │" — replacing its whole
+        // inter-pipe whitespace region — exactly like the intra-cell empty-cell insert (WP4 point 0), so a rect
+        // whose top-left is empty renders "| X |", not "|X  |". A pure clear (empty text) blanks it either way.
+        var (tlStart, tlEnd) = model.CellContentRange(rect.Row0, rect.Col0);
+        string tlText = sanitized;
+        bool paddedEmpty = false;
+        if (sanitized.Length > 0 && model.IsCellEmpty(rect.Row0, rect.Col0))
+        {
+            var tlPos = _buffer.GetPosition(blockStart + tlStart);
+            var (from, to) = WhitespaceRegion(_buffer.GetLine(tlPos.Line).Text, tlPos.Col);
+            int lineRel = tlStart - tlPos.Col; // block-relative offset of the top-left cell's line start
+            tlStart = lineRel + from;
+            tlEnd = lineRel + to;
+            tlText = " " + sanitized + " ";
+            paddedEmpty = true;
+        }
+
+        // The top-left cell is the earliest selected cell in source order and the bottom-right the latest, so
+        // [tlStart, bottom-right content end) is the whole contiguous span covering the rectangle (row-major).
+        int spanStart = tlStart;
         int spanEnd = model.CellContentRange(rect.Row1, rect.Col1).End;
         if (spanEnd < spanStart)
             return TableCommand.NoOperation; // defensive — a degenerate/empty rectangle
 
-        string sanitized = Sanitize(text ?? string.Empty, collapseBreaks, precedingBackslashes: 0);
         string removed = _buffer.GetTextAtOffset(blockStart + spanStart, spanEnd - spanStart);
 
         // Rebuild the span, copying everything verbatim except each selected cell's content region (blanked; the
-        // top-left cell takes the sanitized text). Cursor walks block-relative offsets; indices into `removed`
-        // are cursor − spanStart.
-        var sb = new StringBuilder(removed.Length + sanitized.Length);
+        // top-left cell takes tlText over its possibly-padded range). Cursor walks block-relative offsets; indices
+        // into `removed` are cursor − spanStart. The ranges are disjoint and source-ordered, so the last cell's end
+        // is spanEnd — no trailing copy past the loop is ever reached.
+        var sb = new StringBuilder(removed.Length + tlText.Length);
         int cursor = spanStart;
         for (var r = rect.Row0; r <= rect.Row1; r++)
         {
             for (var c = rect.Col0; c <= rect.Col1; c++)
             {
-                var (cs, ce) = model.CellContentRange(r, c);
+                bool topLeft = r == rect.Row0 && c == rect.Col0;
+                var (cs, ce) = topLeft ? (tlStart, tlEnd) : model.CellContentRange(r, c);
                 if (cs > cursor)
                     sb.Append(removed, cursor - spanStart, cs - cursor);
-                if (r == rect.Row0 && c == rect.Col0)
-                    sb.Append(sanitized);
+                if (topLeft)
+                    sb.Append(tlText);
                 cursor = Math.Max(cursor, ce);
             }
         }
-
-        if (spanEnd > cursor)
-            sb.Append(removed, cursor - spanStart, spanEnd - cursor);
 
         string inserted = sb.ToString();
         if (string.Equals(inserted, removed, StringComparison.Ordinal))
             return TableCommand.NoOperation; // every selected cell already empty (and no text to insert)
 
         var editStart = _buffer.GetPosition(blockStart + spanStart);
-        // Land in the top-left cell after the inserted text, computed ARITHMETICALLY on editStart's line: `sanitized`
-        // carries no line break and is spliced in at editStart, so the landing stays on that line. Resolving it via
-        // GetPosition on the PRE-edit buffer would walk through `removed` (which spans newlines for a multi-row rect)
-        // to the wrong line — and past the buffer end for a large paste, which GetPosition throws on (the same
-        // arithmetic-landing reason Insert/Replace already state).
-        var target = new TextPosition(editStart.Line, editStart.Col + sanitized.Length);
+        // Land after the inserted text (past the leading pad for a padded empty cell), computed ARITHMETICALLY on
+        // editStart's line: tlText carries no line break and is spliced in at editStart, so the landing stays on
+        // that line. Resolving it via GetPosition on the PRE-edit buffer would walk through `removed` (which spans
+        // newlines for a multi-row rect) to the wrong line — and past the buffer end for a large paste, which
+        // GetPosition throws on (the same arithmetic-landing reason Insert/Replace already state).
+        var target = new TextPosition(editStart.Line, editStart.Col + (paddedEmpty ? 1 : 0) + sanitized.Length);
         return TableCommand.Splice(new Edit(editStart, removed, inserted), EditKind.Structural, target, seal: true);
     }
 
