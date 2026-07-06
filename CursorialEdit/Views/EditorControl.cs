@@ -372,6 +372,21 @@ public class EditorControl : Control, IContentRowMap
         bool ctrl = (e.Modifiers & KeyModifiers.Control) != 0;
         bool shift = (e.Modifiers & KeyModifiers.Shift) != 0;
 
+        // Alt+Enter inserts a literal in-cell line break (<br>) inside a table cell — the Excel/Sheets
+        // convention (plain Enter commits the cell downward, so the break needs its own chord). Handled
+        // before the Alt-chord bubble below; outside a table it is not ours, so it bubbles like other Alt
+        // chords (menu access, future row ops).
+        if (e.Key == Key.Enter && e.Modifiers == KeyModifiers.Alt)
+        {
+            if (caret.IsInTable)
+            {
+                caret.TableInsertCellBreak();
+                e.Handled = true;
+            }
+
+            return;
+        }
+
         // Alt/Super chords are not ours (M3 row ops, menu access keys) — let them bubble.
         if ((e.Modifiers & ~(KeyModifiers.Control | KeyModifiers.Shift)) != KeyModifiers.None)
             return;

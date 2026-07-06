@@ -53,6 +53,33 @@ public sealed class TableEditingTests
         Assert.Equal("c", model.CellContent(0, 2));
     }
 
+    [Fact]
+    public void AltEnter_InsertsAnInCellLineBreak_ReParsingAsOneCell()
+    {
+        using var h = MarkdownEditingHarness.Create("| A | B |\n|---|---|\n| ab | cd |\n", columns: 40, rows: 10);
+
+        h.Click(3, 3);                        // between 'a' and 'b' in the body cell "ab"
+        h.Key(Key.Enter, KeyModifiers.Alt);   // Alt+Enter → insert a literal <br> cell break at the caret
+
+        Assert.Equal("| a<br>b | cd |", Line(h, 2)); // spliced at the caret; the row is still two columns
+        var model = Model(h);
+        Assert.Equal("a<br>b", model.CellContent(1, 0)); // re-parses as ONE cell holding the break
+        Assert.Equal("cd", model.CellContent(1, 1));
+    }
+
+    [Fact]
+    public void AltEnter_OutsideATable_IsNotConsumed()
+    {
+        using var h = MarkdownEditingHarness.Create("plain paragraph\n", columns: 40, rows: 8);
+        h.Click(3, 0);
+        var before = h.Buffer.GetText();
+
+        h.Key(Key.Enter, KeyModifiers.Alt);
+        h.Settle();
+
+        Assert.Equal(before, h.Buffer.GetText()); // the cell-break chord is table-only — elsewhere it bubbles, no edit
+    }
+
     // ───────────────────────────── 1. caret lands in the right cell ─────────────────────────────
 
     [Theory]
