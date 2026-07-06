@@ -833,6 +833,92 @@ internal sealed class DocumentCaret : ISelectionSource
             RunTableCommand(_table.InsertCellBreak(model, blockStart, _position));
     }
 
+    // ───────────────────────────── table structural operations (M3.WP7, spec §5.3) ─────────────────────────────
+
+    /// <summary>Inserts a new empty row above the caret's row (spec §5.3, bound to Alt+↑); a no-op outside a table.</summary>
+    public void TableInsertRowAbove()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.InsertRow(model, blockStart, _position, below: false));
+    }
+
+    /// <summary>Inserts a new empty row below the caret's row (spec §5.3, bound to Alt+↓); a no-op outside a table.</summary>
+    public void TableInsertRowBelow()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.InsertRow(model, blockStart, _position, below: true));
+    }
+
+    /// <summary>Inserts a new empty column to the left of the caret's column (spec §5.3); a no-op outside a table.</summary>
+    public void TableInsertColumnLeft()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.InsertColumn(model, blockStart, _position, right: false));
+    }
+
+    /// <summary>Inserts a new empty column to the right of the caret's column (spec §5.3); a no-op outside a table.</summary>
+    public void TableInsertColumnRight()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.InsertColumn(model, blockStart, _position, right: true));
+    }
+
+    /// <summary>Deletes the caret's row — promoting the next row when it is the header (spec §5.3 [EDGE]); a no-op outside a table.</summary>
+    public void TableDeleteRow()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.DeleteRow(model, blockStart, _position));
+    }
+
+    /// <summary>Deletes the caret's column — deleting the whole table when it is the last column (spec §5.3 [EDGE]); a no-op outside a table.</summary>
+    public void TableDeleteColumn()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.DeleteColumn(model, blockStart, _position));
+    }
+
+    /// <summary>Moves the caret's row up (spec §5.3); a no-op outside a table or when the row cannot move.</summary>
+    public void TableMoveRowUp()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.MoveRow(model, blockStart, _position, down: false));
+    }
+
+    /// <summary>Moves the caret's row down (spec §5.3); a no-op outside a table or when the row cannot move.</summary>
+    public void TableMoveRowDown()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.MoveRow(model, blockStart, _position, down: true));
+    }
+
+    /// <summary>Moves the caret's column left, carrying its alignment (spec §5.3); a no-op outside a table or at the left edge.</summary>
+    public void TableMoveColumnLeft()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.MoveColumn(model, blockStart, _position, right: false));
+    }
+
+    /// <summary>Moves the caret's column right, carrying its alignment (spec §5.3); a no-op outside a table or at the right edge.</summary>
+    public void TableMoveColumnRight()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.MoveColumn(model, blockStart, _position, right: true));
+    }
+
+    /// <summary>Sets the caret column's alignment, rewriting only the delimiter row (spec §5.3); a no-op outside a table.</summary>
+    public void TableSetColumnAlignment(ColumnAlignment alignment)
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.SetAlignment(model, blockStart, _position, alignment));
+    }
+
+    /// <summary>Deletes the whole table the caret is in (spec §5.3), landing the caret where the table was; a no-op outside a table.</summary>
+    public void TableDelete()
+    {
+        if (TryTableContext(out var model, out int blockStart))
+            RunTableCommand(_table.DeleteTable(model, blockStart));
+    }
+
     /// <summary>Resolves the caret's block to a live <see cref="TableModel"/> (Decision-4 cell focus is derived from the caret offset), or <see langword="false"/> when the caret is not in a table.</summary>
     private bool TryTableContext(out TableModel model, out int blockStart)
     {

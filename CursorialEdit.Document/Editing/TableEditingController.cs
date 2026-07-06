@@ -280,6 +280,375 @@ public sealed class TableEditingController
         return TableCommand.Splice(new Edit(caret, string.Empty, Break), EditKind.Structural, target, seal: true);
     }
 
+    // ───────────────────────────── structural operations (M3.WP7, spec §5.3) ─────────────────────────────
+    //
+    // Each op is ONE GFM-valid source splice through EditController.Apply as ONE sealed EditKind.Structural
+    // undo group (so undo restores the exact pre-op source + caret), lands the caret in a sensible cell, and
+    // re-parses (Markdig) to the intended table. Positions are derived from the TableModel (row source lines,
+    // cell spans, alignment) — never a bespoke pipe scanner — and the delimiter row is kept structurally
+    // consistent with the data columns (one marker per column) by rebuilding it from the per-column alignment.
+
+    /// <summary>
+    /// Inserts a new empty row above (<paramref name="below"/> = false) or below the caret's row (spec §5.3).
+    /// <b>[EDGE]</b> A body row cannot precede the header/delimiter in GFM, so on the header row the new row is
+    /// inserted as the first <i>body</i> row (below the delimiter) whether "above" or "below" was requested.
+    /// Caret → the new row's first cell.
+    /// </summary>
+    public TableCommand InsertRow(TableModel model, int blockStart, TextPosition caret, bool below)
+    {
+        if (model.CellOfOffset(_buffer.GetOffset(caret) - blockStart) is not { } cell)
+            return TableCommand.NoOperation;
+
+        int blockLine = BlockLine(blockStart);
+        int insertLineAbs = cell.Row == 0
+            ? blockLine + model.RowSourceLine(0) + 2         // header: land as the first body row (after the delimiter)
+            : below
+                ? blockLine + model.RowSourceLine(cell.Row) + 1
+                : blockLine + model.RowSourceLine(cell.Row);
+
+        return InsertRowAt(insertLineAbs, BuildEmptyRow(model.ColumnCount));
+    }
+
+    /// <summary>Inserts an empty column left (<paramref name="right"/> = false) or right of the caret's column into EVERY row (header, delimiter, body); the new column's delimiter marker defaults to <c>---</c> (renders left). Caret → the new column's cell in the current row.</summary>
+    public TableCommand InsertColumn(TableModel model, int blockStart, TextPosition caret, bool right)
+    {
+        if (model.CellOfOffset(_buffer.GetOffset(caret) - blockStart) is not { } cell)
+            return TableCommand.NoOperation;
+
+        int oldColumns = model.ColumnCount;
+        int at = right ? cell.Column + 1 : cell.Column;
+
+        var rows = new List<string[]>(model.RowCount);
+        for (var r = 0; r < model.RowCount; r++)
+        {
+            var arr = new string[oldColumns + 1];
+            for (var c = 0; c < oldColumns; c++)
+                arr[c < at ? c : c + 1] = model.CellContent(r, c);
+            arr[at] = string.Empty;
+            rows.Add(arr);
+        }
+
+        var align = new ColumnAlignment[oldColumns + 1];
+        for (var c = 0; c < oldColumns; c++)
+            align[c < at ? c : c + 1] = model.Alignment(c);
+        align[at] = ColumnAlignment.None; // "---" — default (left-rendered) alignment
+
+        return RebuildTable(model, blockStart, rows, align, cell.Row, at);
+    }
+
+    /// <summary>
+    /// Deletes the caret's row (spec §5.3). <b>[EDGE]</b> Deleting the header row promotes the next body row to
+    /// header (a GFM table must lead with header + delimiter); deleting the only row deletes the whole table.
+    /// Caret → the same column in the adjacent row.
+    /// </summary>
+    public TableCommand DeleteRow(TableModel model, int blockStart, TextPosition caret)
+    {
+        if (model.CellOfOffset(_buffer.GetOffset(caret) - blockStart) is not { } cell)
+            return TableCommand.NoOperation;
+
+        if (model.RowCount <= 1)
+            return DeleteTable(model, blockStart); // the header is the only row — nothing valid remains
+
+        if (cell.Row == 0)
+            return PromoteHeader(model, blockStart, cell.Column); // [EDGE] promote row 1 to header
+
+        int abs = AbsLineOfRow(model, blockStart, cell.Row);
+        var line = _buffer.GetLine(abs);
+
+        // Remove the row's whole physical line. When it is the buffer's last line (no terminator of its own) take
+        // the PRECEDING terminator instead, so no dangling empty line is left behind.
+        int removeStart, removeEnd;
+        if (line.EndingLength > 0)
+        {
+            removeStart = LineStart(abs);
+            removeEnd = removeStart + line.TotalLength;
+        }
+        else
+        {
+            removeStart = LineStart(abs) - _buffer.GetLine(abs - 1).EndingLength;
+            removeEnd = LineStart(abs) + line.Text.Length;
+        }
+
+        string removed = _buffer.GetTextAtOffset(removeStart, removeEnd - removeStart);
+
+        // Caret → the same column in the adjacent row: the row below (which shifts up one line after the delete)
+        // when one exists, else the row above (unaffected by a delete beneath it).
+        int adjacent = cell.Row + 1 < model.RowCount ? cell.Row + 1 : cell.Row - 1;
+        var entry = _buffer.GetPosition(blockStart + model.CellEntryOffset(adjacent, cell.Column));
+        var target = adjacent > cell.Row ? new TextPosition(entry.Line - 1, entry.Col) : entry;
+
+        return TableCommand.Splice(new Edit(_buffer.GetPosition(removeStart), removed, string.Empty), EditKind.Structural, target, seal: true);
+    }
+
+    /// <summary>Deletes the caret's column from EVERY row (incl. the delimiter marker). <b>[EDGE]</b> Deleting the last (only) column deletes the whole table. Caret → the adjacent column (or out of the table when it was deleted).</summary>
+    public TableCommand DeleteColumn(TableModel model, int blockStart, TextPosition caret)
+    {
+        if (model.CellOfOffset(_buffer.GetOffset(caret) - blockStart) is not { } cell)
+            return TableCommand.NoOperation;
+
+        int oldColumns = model.ColumnCount;
+        if (oldColumns <= 1)
+            return DeleteTable(model, blockStart); // [EDGE] the last column — the whole table goes
+
+        int del = cell.Column;
+        var rows = new List<string[]>(model.RowCount);
+        for (var r = 0; r < model.RowCount; r++)
+        {
+            var arr = new string[oldColumns - 1];
+            for (var c = 0; c < oldColumns; c++)
+            {
+                if (c == del)
+                    continue;
+                arr[c < del ? c : c - 1] = model.CellContent(r, c);
+            }
+
+            rows.Add(arr);
+        }
+
+        var align = new ColumnAlignment[oldColumns - 1];
+        for (var c = 0; c < oldColumns; c++)
+        {
+            if (c == del)
+                continue;
+            align[c < del ? c : c - 1] = model.Alignment(c);
+        }
+
+        int caretColumn = del < oldColumns - 1 ? del : del - 1; // the column now sitting where del was, else its predecessor
+        return RebuildTable(model, blockStart, rows, align, cell.Row, caretColumn);
+    }
+
+    /// <summary>Moves the caret's row up (<paramref name="down"/> = false) or down, swapping it with its neighbour. The header does not move and a body row never crosses the delimiter (moving row 1 up is a no-op). Caret follows the moved row.</summary>
+    public TableCommand MoveRow(TableModel model, int blockStart, TextPosition caret, bool down)
+    {
+        if (model.CellOfOffset(_buffer.GetOffset(caret) - blockStart) is not { } cell)
+            return TableCommand.NoOperation;
+
+        int r = cell.Row;
+        int other = down ? r + 1 : r - 1;
+        if (r == 0 || other < 1 || other >= model.RowCount)
+            return TableCommand.NoOperation; // the header stays put; a body row cannot cross the delimiter or the ends
+
+        int topAbs = AbsLineOfRow(model, blockStart, Math.Min(r, other));   // the upper of the two adjacent body lines
+        int bottomAbs = topAbs + 1;                                         // body rows are physically consecutive
+        var top = _buffer.GetLine(topAbs);
+        var bottom = _buffer.GetLine(bottomAbs);
+
+        int start = LineStart(topAbs);
+        int end = LineStart(bottomAbs) + bottom.Text.Length; // up to (not including) the bottom line's terminator
+        string removed = _buffer.GetTextAtOffset(start, end - start);
+        string inserted = bottom.Text + top.EndingText + top.Text; // swap the two line texts; keep the interior terminator
+
+        // The moved row's text is unchanged (only relocated by one line), so the caret keeps its column and shifts one line.
+        var target = new TextPosition(down ? caret.Line + 1 : caret.Line - 1, caret.Col);
+        return TableCommand.Splice(new Edit(_buffer.GetPosition(start), removed, inserted), EditKind.Structural, target, seal: true);
+    }
+
+    /// <summary>Moves the caret's column left (<paramref name="right"/> = false) or right, swapping it with its neighbour across EVERY row <b>including the delimiter</b> (so the column's alignment travels with it). Caret follows the moved column.</summary>
+    public TableCommand MoveColumn(TableModel model, int blockStart, TextPosition caret, bool right)
+    {
+        if (model.CellOfOffset(_buffer.GetOffset(caret) - blockStart) is not { } cell)
+            return TableCommand.NoOperation;
+
+        int c = cell.Column;
+        int other = right ? c + 1 : c - 1;
+        if (other < 0 || other >= model.ColumnCount)
+            return TableCommand.NoOperation; // already at the edge
+
+        var rows = new List<string[]>(model.RowCount);
+        for (var r = 0; r < model.RowCount; r++)
+        {
+            var arr = new string[model.ColumnCount];
+            for (var col = 0; col < model.ColumnCount; col++)
+                arr[col] = model.CellContent(r, col);
+            (arr[c], arr[other]) = (arr[other], arr[c]);
+            rows.Add(arr);
+        }
+
+        var align = new ColumnAlignment[model.ColumnCount];
+        for (var col = 0; col < model.ColumnCount; col++)
+            align[col] = model.Alignment(col);
+        (align[c], align[other]) = (align[other], align[c]); // alignment travels with the column (delimiter stays consistent)
+
+        return RebuildTable(model, blockStart, rows, align, cell.Row, other);
+    }
+
+    /// <summary>Sets the caret column's alignment (left/center/right/none), rewriting only the delimiter row's markers; the data rows are untouched, and the alignment round-trips (render → save → reopen). Caret unchanged.</summary>
+    public TableCommand SetAlignment(TableModel model, int blockStart, TextPosition caret, ColumnAlignment alignment)
+    {
+        if (model.CellOfOffset(_buffer.GetOffset(caret) - blockStart) is not { } cell)
+            return TableCommand.NoOperation;
+
+        var align = new ColumnAlignment[model.ColumnCount];
+        for (var c = 0; c < model.ColumnCount; c++)
+            align[c] = model.Alignment(c);
+        align[cell.Column] = alignment;
+
+        int delimiterAbs = BlockLine(blockStart) + model.RowSourceLine(0) + 1;
+        string removed = _buffer.GetLine(delimiterAbs).Text;
+        string inserted = BuildDelimiterRow(align);
+        if (string.Equals(removed, inserted, StringComparison.Ordinal))
+            return TableCommand.NoOperation; // no change
+
+        // Only the delimiter LINE changes; the caret sits in a data cell whose (line, col) is unaffected.
+        return TableCommand.Splice(new Edit(new TextPosition(delimiterAbs, 0), removed, inserted), EditKind.Structural, caret, seal: true);
+    }
+
+    /// <summary>Deletes the whole table block's structural source (header, delimiter, and every body row). Caret → where the table was (the line that now occupies its top position).</summary>
+    public TableCommand DeleteTable(TableModel model, int blockStart)
+    {
+        int headerAbs = AbsLineOfRow(model, blockStart, 0);
+        int lastAbs = LastPhysicalLine(model, blockStart);
+
+        int removeStart = LineStart(headerAbs);
+        int removeEnd = LineStart(lastAbs) + _buffer.GetLine(lastAbs).TotalLength; // include the last row's terminator if any
+        string removed = _buffer.GetTextAtOffset(removeStart, removeEnd - removeStart);
+
+        // Land where the table was: the line now at the table's old top position, clamped into the shrunken buffer.
+        int newLineCount = _buffer.LineCount - CountNewlines(removed);
+        var target = new TextPosition(Math.Min(headerAbs, Math.Max(0, newLineCount - 1)), 0);
+        return TableCommand.Splice(new Edit(_buffer.GetPosition(removeStart), removed, string.Empty), EditKind.Structural, target, seal: true);
+    }
+
+    // ───────────────────────────── structural splice helpers ─────────────────────────────
+
+    /// <summary>Promotes body row 1 to the header (the delete-header [EDGE]): removes the old header line and lifts row 1's text above the delimiter as the new header. Caret → the new header, same column.</summary>
+    private TableCommand PromoteHeader(TableModel model, int blockStart, int column)
+    {
+        int headerAbs = AbsLineOfRow(model, blockStart, 0);
+        var header = _buffer.GetLine(headerAbs);
+        var delimiter = _buffer.GetLine(headerAbs + 1);
+        var firstBody = _buffer.GetLine(headerAbs + 2);
+
+        int removeStart = LineStart(headerAbs);
+        int removeEnd = LineStart(headerAbs + 2) + firstBody.Text.Length; // up to (not including) row 1's terminator
+        string removed = _buffer.GetTextAtOffset(removeStart, removeEnd - removeStart); // header + delim + row-1 text
+        string inserted = firstBody.Text + header.EndingText + delimiter.Text; // row 1 becomes header; delimiter follows
+
+        // Row 1's text is unchanged but rises by two physical lines (past the removed header and delimiter gap).
+        var entry = _buffer.GetPosition(blockStart + model.CellEntryOffset(1, column));
+        var target = new TextPosition(entry.Line - 2, entry.Col);
+        return TableCommand.Splice(new Edit(_buffer.GetPosition(removeStart), removed, inserted), EditKind.Structural, target, seal: true);
+    }
+
+    /// <summary>
+    /// Rebuilds the whole table region (header, delimiter, every body row) from <paramref name="rows"/> and
+    /// <paramref name="align"/> as one splice — the shared path for the column ops, which change every line.
+    /// The delimiter is rebuilt from the per-column alignment so it always has exactly one marker per data
+    /// column. Caret → cell (<paramref name="caretRow"/>, <paramref name="caretColumn"/>) in the new layout.
+    /// </summary>
+    private TableCommand RebuildTable(TableModel model, int blockStart, List<string[]> rows, ColumnAlignment[] align, int caretRow, int caretColumn)
+    {
+        int headerAbs = AbsLineOfRow(model, blockStart, 0);
+        int lastAbs = LastPhysicalLine(model, blockStart);
+
+        // Physical order: header row, delimiter, then the body rows (all contiguous — a table cannot hold a blank line).
+        var physical = new List<string>(model.RowCount + 1) { BuildDataRow(rows[0]), BuildDelimiterRow(align) };
+        for (var r = 1; r < model.RowCount; r++)
+            physical.Add(BuildDataRow(rows[r]));
+
+        int removeStart = LineStart(headerAbs);
+        int removeEnd = LineStart(lastAbs) + _buffer.GetLine(lastAbs).Text.Length; // exclude the last line's terminator
+        string removed = _buffer.GetTextAtOffset(removeStart, removeEnd - removeStart);
+
+        var sb = new StringBuilder();
+        for (var i = 0; i < physical.Count; i++)
+        {
+            sb.Append(physical[i]);
+            if (i < physical.Count - 1)
+                sb.Append(_buffer.GetLine(headerAbs + i).EndingText); // keep each original interior terminator
+        }
+
+        var target = new TextPosition(AbsLineOfRow(model, blockStart, caretRow), EntryColumn(rows[caretRow], caretColumn));
+        return TableCommand.Splice(new Edit(_buffer.GetPosition(removeStart), removed, sb.ToString()), EditKind.Structural, target, seal: true);
+    }
+
+    /// <summary>Splices <paramref name="newRow"/> in as a fresh physical line at absolute line <paramref name="insertLineAbs"/> (appending past the last line when needed). Caret → the new row's first cell.</summary>
+    private TableCommand InsertRowAt(int insertLineAbs, string newRow)
+    {
+        if (insertLineAbs < _buffer.LineCount)
+        {
+            var editStart = new TextPosition(insertLineAbs, 0);
+            var target = new TextPosition(insertLineAbs, 1); // just inside the new row's leading pipe (its first cell)
+            return TableCommand.Splice(new Edit(editStart, string.Empty, newRow + "\n"), EditKind.Structural, target, seal: true);
+        }
+
+        int lastLine = _buffer.LineCount - 1;
+        var last = _buffer.GetLine(lastLine);
+        var appendAt = new TextPosition(lastLine, last.Text.Length);
+        var appendTarget = new TextPosition(lastLine + 1, 1);
+        return TableCommand.Splice(new Edit(appendAt, string.Empty, "\n" + newRow), EditKind.Structural, appendTarget, seal: true);
+    }
+
+    private int BlockLine(int blockStart) => _buffer.GetPosition(blockStart).Line;
+
+    private int AbsLineOfRow(TableModel model, int blockStart, int row) => BlockLine(blockStart) + model.RowSourceLine(row);
+
+    /// <summary>
+    /// The absolute buffer line of the table's last <b>physical</b> line. With body rows that is the last body
+    /// row; for a header-only table (<see cref="TableModel.RowCount"/> == 1) the delimiter row sits physically
+    /// <i>below</i> the only model row — the <see cref="Math.Max(int,int)"/> picks it up, so a whole-table
+    /// removal / rebuild covers the delimiter instead of orphaning it (adversarial-review fix).
+    /// </summary>
+    private int LastPhysicalLine(TableModel model, int blockStart)
+        => Math.Max(AbsLineOfRow(model, blockStart, model.RowCount - 1), AbsLineOfRow(model, blockStart, 0) + 1);
+
+    private int LineStart(int absLine) => _buffer.GetOffset(new TextPosition(absLine, 0));
+
+    /// <summary>Builds a GFM data row <c>| c0 | c1 | … |</c> from the trimmed cell contents (escaped/backtick-guarded pipes preserved verbatim, empty cells rendered as a bare inter-pipe gap).</summary>
+    private static string BuildDataRow(IReadOnlyList<string> cells)
+    {
+        var sb = new StringBuilder("|");
+        foreach (var cell in cells)
+            sb.Append(' ').Append(cell).Append(" |");
+        return sb.ToString();
+    }
+
+    /// <summary>Builds an empty GFM row of <paramref name="columns"/> blank cells.</summary>
+    private static string BuildEmptyRow(int columns)
+    {
+        var cells = new string[Math.Max(1, columns)];
+        Array.Fill(cells, string.Empty);
+        return BuildDataRow(cells);
+    }
+
+    /// <summary>Builds the GFM delimiter row from the per-column alignment — one <c>---</c>/<c>:---</c>/<c>:---:</c>/<c>---:</c> marker per column (structurally consistent with the data columns).</summary>
+    private static string BuildDelimiterRow(ColumnAlignment[] align)
+    {
+        var sb = new StringBuilder("|");
+        foreach (var a in align)
+            sb.Append(' ').Append(Marker(a)).Append(" |");
+        return sb.ToString();
+    }
+
+    private static string Marker(ColumnAlignment align) => align switch
+    {
+        ColumnAlignment.Left => ":---",
+        ColumnAlignment.Center => ":---:",
+        ColumnAlignment.Right => "---:",
+        _ => "---",
+    };
+
+    /// <summary>The column within a freshly <see cref="BuildDataRow"/>-built line where a caret entering cell <paramref name="targetColumn"/> lands: just inside the opening pipe for an empty cell, or on the first content character otherwise.</summary>
+    private static int EntryColumn(IReadOnlyList<string> cells, int targetColumn)
+    {
+        int column = 1; // past the leading '|', on cell 0's leading pad space
+        for (var j = 0; j < targetColumn; j++)
+            column += 1 + cells[j].Length + 2; // " " + content + " |"
+        return column + (cells[targetColumn].Length > 0 ? 1 : 0);
+    }
+
+    private static int CountNewlines(string text)
+    {
+        int count = 0;
+        foreach (char c in text)
+        {
+            if (c == '\n')
+                count++;
+        }
+
+        return count;
+    }
+
     // ───────────────────────────── text hygiene ─────────────────────────────
 
     /// <summary>

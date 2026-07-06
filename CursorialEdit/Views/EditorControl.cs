@@ -387,6 +387,22 @@ public class EditorControl : Control, IContentRowMap
             return;
         }
 
+        // Alt+↑ / Alt+↓ insert a table row above / below the caret's row (spec §5.3). Table-only: elsewhere the
+        // chord bubbles (Alt motion is unbound), like Alt+Enter above. Handled before the Alt-chord bubble below.
+        if (e.Key is Key.UpArrow or Key.DownArrow && e.Modifiers == KeyModifiers.Alt)
+        {
+            if (caret.IsInTable)
+            {
+                if (e.Key == Key.UpArrow)
+                    caret.TableInsertRowAbove();
+                else
+                    caret.TableInsertRowBelow();
+                e.Handled = true;
+            }
+
+            return;
+        }
+
         // Alt/Super chords are not ours (M3 row ops, menu access keys) — let them bubble.
         if ((e.Modifiers & ~(KeyModifiers.Control | KeyModifiers.Shift)) != KeyModifiers.None)
             return;
