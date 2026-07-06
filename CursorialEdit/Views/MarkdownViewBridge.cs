@@ -344,7 +344,11 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         {
             string tableSource = BlockSource(BuildLines(blockIndex, block));
             if (TableModel.Build(block, tableSource) is { } offBandModel)
-                return TableCaretMap.Build(offBandModel, TableGridMetrics.BuildForViewport(offBandModel, Math.Max(1, _wrapWidth)), tableSource);
+                // Floor at 0 (not 1) to match the realized presenter's ctor: BuildForViewport(<=0) takes the
+                // viewport-unaware [3,40] fallback, so a cold-start off-band caret query (before the first
+                // OnViewportChanged, _wrapWidth still 0) resolves the SAME widths the presenter will, not an
+                // all-MinWidth grid from a negative budget — the caret lands in the right cell.
+                return TableCaretMap.Build(offBandModel, TableGridMetrics.BuildForViewport(offBandModel, Math.Max(0, _wrapWidth)), tableSource);
         }
 
         return RunMapBuilder.Build(

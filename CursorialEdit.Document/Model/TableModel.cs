@@ -251,13 +251,15 @@ public sealed class TableModel
         foreach (int w in natural)
             maxNatural = Math.Max(maxNatural, w);
 
+        // The MinWidth floor holds without an inner clamp: every natural[c] ≥ MinWidth (line above) and the
+        // search stays cap ≥ mid ≥ lo ≥ MinWidth, so Min(natural, cap) can never dip below MinWidth.
         int lo = MinWidth, hi = maxNatural, cap = MinWidth;
         while (lo <= hi)
         {
             int mid = (lo + hi) >> 1;
             long sum = 0;
             foreach (int w in natural)
-                sum += Math.Max(MinWidth, Math.Min(w, mid));
+                sum += Math.Min(w, mid);
             if (sum <= contentBudget)
             {
                 cap = mid;
@@ -273,7 +275,7 @@ public sealed class TableModel
         long used = 0;
         for (var c = 0; c < n; c++)
         {
-            widths[c] = Math.Max(MinWidth, Math.Min(natural[c], cap));
+            widths[c] = Math.Min(natural[c], cap); // ≥ MinWidth by the invariant above
             used += widths[c];
         }
 
@@ -683,17 +685,36 @@ public sealed class TableModel
 
         int budget = Math.Max(1, width);
         var wrapped = CaretNavigator.Wrap(text, budget, WrapMode.WordWrap);
+        var textSpan = text.AsSpan();
 
-        int rowCount = wrapped.RowCount;
-        var fragments = new CellFragment[rowCount];
-        for (var v = 0; v < rowCount; v++)
+        // A cell renders TRIMMED content per visual row — unlike prose, whose soft wrap keeps a trailing space.
+        // For each wrapped segment we trim trailing whitespace from the RENDERED width (so a right/center-
+        // aligned wrapped line stays flush to its edge, and a word that exactly fills the column doesn't spill
+        // the following space as its own blank row); the SOURCE range still spans the full segment so the
+        // fragments tile the cell and the caret round-trips (the trimmed space stays attributed to its source).
+        var fragments = new List<CellFragment>(wrapped.RowCount);
+        for (var v = 0; v < wrapped.RowCount; v++)
         {
             int start = wrapped.RowStart(v);
-            int length = wrapped.RowEnd(v) - start;
-            fragments[v] = new CellFragment(srcStart + start, length, wrapped.RowWidth(v));
+            int end = wrapped.RowEnd(v);
+
+            int renderEnd = end;
+            while (renderEnd > start && (textSpan[renderEnd - 1] == ' ' || textSpan[renderEnd - 1] == '\t'))
+                renderEnd--;
+
+            if (renderEnd == start && fragments.Count > 0)
+            {
+                // A whitespace-only segment (the lone space between two exactly-fitting words): don't emit a
+                // blank visual row — extend the previous fragment's source to absorb it, keeping tiling intact.
+                fragments[^1] = fragments[^1] with { SrcLength = srcStart + end - fragments[^1].SrcStart };
+                continue;
+            }
+
+            int renderWidth = wrapped.RowWidth(v) - (end - renderEnd); // each trimmed trailing char is a width-1 space/tab
+            fragments.Add(new CellFragment(srcStart + start, end - start, renderWidth));
         }
 
-        return fragments;
+        return fragments.Count > 0 ? [.. fragments] : [new CellFragment(srcStart, text.Length, 0)];
     }
 
     private static ColumnAlignment MapAlignment(MdTableAlign? align) => align switch

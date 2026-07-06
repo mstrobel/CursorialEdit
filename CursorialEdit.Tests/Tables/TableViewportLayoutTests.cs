@@ -308,4 +308,31 @@ public class TableViewportLayoutTests
             Assert.Equal(offset, map.OffsetAt(row, cell));
         }
     }
+
+    // ───────────────────────────── 7. WordWrap-reuse trailing-space fixes (review wave) ─────────────────────────────
+
+    [Fact]
+    public void WordWrap_WordExactlyFillingColumn_DoesNotSpillALoneSpaceRow()
+    {
+        // "abcd efgh" in a column that shrinks to width 4: "abcd" fills it exactly, so prose WordWrap parks the
+        // following space as its own segment. A CELL must not render that as a blank visual row — "efgh" sits
+        // directly below "abcd" (two rows, not three). (Review finding 1.)
+        using var h = MarkdownEditingHarness.Create("| x |\n|---|\n| abcd efgh |\n", columns: 8, rows: 12);
+
+        Assert.Equal("│ abcd │", h.RowTrimmed(3));
+        Assert.Equal("│ efgh │", h.RowTrimmed(4)); // directly below — no lone-space blank row between
+        Assert.Equal("└──────┘", h.RowTrimmed(5)); // bottom border right after ⇒ the cell is 2 rows, not 3
+    }
+
+    [Fact]
+    public void WordWrap_RightAlignedWrappedCell_TrimsTrailingSpace_StaysFlushRight()
+    {
+        // Right-aligned "one two" at column width 4: "one " fills exactly WITH a trailing space. That space must
+        // be trimmed from the rendered width so "one" is flush to the right edge, not shoved a cell left by the
+        // kept space. (Review finding 2.)
+        using var h = MarkdownEditingHarness.Create("| r |\n|--:|\n| one two |\n", columns: 8, rows: 12);
+
+        Assert.EndsWith("one │", h.RowTrimmed(3)); // flush against the right padding — not "one  │"
+        Assert.EndsWith("two │", h.RowTrimmed(4));
+    }
 }
