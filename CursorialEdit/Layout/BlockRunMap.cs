@@ -1,10 +1,12 @@
+using Cursorial.Rendering.Text;
+
 using CursorialEdit.Document.Buffer;
 
 namespace CursorialEdit.Layout;
 
 /// <summary>
 /// One block's layout: per-visual-row <see cref="Run"/> maps built by soft-wrapping the block's
-/// source lines through <see cref="CaretNavigator.Wrap"/> (architecture Decision 8 / §2.4). The
+/// source lines through <see cref="TextLayout.Build"/> (architecture Decision 8 / §2.4). The
 /// map carries a snapshot of the block's line texts, so rendering and caret math consume it
 /// without touching the buffer; a re-formed block gets a fresh map, an unedited block's map stays
 /// valid across every edit elsewhere (its spans are block-relative).
@@ -34,9 +36,10 @@ public sealed class BlockRunMap : ICaretMap
     private readonly Run[] _runs; // one per row in M1; RunsForRow slices here
 
     // The per-line wrap results, retained so Locate/OffsetAt DELEGATE the soft-wrap semantics
-    // (end-affinity boundary rule, cluster-pinned cell mapping) to WrappedLine instead of
-    // mirroring them — one implementation, shared with the WP8 caret (review wave3-9).
-    private readonly WrappedLine[] _wrapped;
+    // (end-affinity boundary rule, cluster-pinned cell mapping) to the framework TextLayout instead
+    // of mirroring them — one implementation, shared with the WP8 caret (review wave3-9). Each line's
+    // text carries no hard break (endings live out-of-band), so its TextLayout is a pure soft-wrap.
+    private readonly TextLayout[] _wrapped;
 
     /// <summary>Prefix sums: entry <c>i</c> is line <c>i</c>'s first visual row; entry <c>lineCount</c> is <see cref="RowCount"/>.</summary>
     private readonly int[] _lineFirstRow;
@@ -46,7 +49,7 @@ public sealed class BlockRunMap : ICaretMap
 
     private BlockRunMap(
         string[] lineTexts, RowEntry[] rows, Run[] runs,
-        WrappedLine[] wrapped, int[] lineFirstRow, int[] lineSrcStart,
+        TextLayout[] wrapped, int[] lineFirstRow, int[] lineSrcStart,
         int wrapWidth, int sourceLength)
     {
         _lineTexts = lineTexts;
@@ -81,7 +84,7 @@ public sealed class BlockRunMap : ICaretMap
             throw new ArgumentException("A block owns at least one line.", nameof(lines));
 
         var lineTexts = new string[lines.Count];
-        var wrapped = new WrappedLine[lines.Count];
+        var wrapped = new TextLayout[lines.Count];
         var lineFirstRow = new int[lines.Count + 1];
         var lineSrcStart = new int[lines.Count + 1];
         var rows = new List<RowEntry>(lines.Count);
@@ -94,13 +97,13 @@ public sealed class BlockRunMap : ICaretMap
             lineFirstRow[i] = rows.Count;
             lineSrcStart[i] = srcStart;
 
-            var wrappedLine = CaretNavigator.Wrap(line.Text, wrapWidth);
+            var wrappedLine = TextLayout.Build(line.Text, wrapWidth, WrapMode.WordWrap);
             wrapped[i] = wrappedLine;
-            for (var r = 0; r < wrappedLine.RowCount; r++)
+            for (var r = 0; r < wrappedLine.LineCount; r++)
             {
-                int segStart = wrappedLine.RowStart(r);
-                int segLength = wrappedLine.RowEnd(r) - segStart;
-                rows.Add(new RowEntry(i, segStart, segLength, srcStart + segStart, wrappedLine.RowWidth(r)));
+                int segStart = wrappedLine.LineContentStart(r);
+                int segLength = wrappedLine.LineContentEnd(r) - segStart;
+                rows.Add(new RowEntry(i, segStart, segLength, srcStart + segStart, wrappedLine.LineWidth(r)));
             }
 
             srcStart += line.TotalLength;
@@ -153,7 +156,7 @@ public sealed class BlockRunMap : ICaretMap
     /// position (clamped to <c>[0, SourceLength]</c>; terminator interiors snap to their line's
     /// row end). A soft-wrap boundary offset addresses two positions; <paramref name="endAffinity"/>
     /// resolves it to the earlier row's visual end, <see langword="false"/> to the next row's
-    /// start — <see cref="WrappedLine"/>'s affinity contract, delegated to it after the line-level
+    /// start — <see cref="TextLayout"/>'s affinity contract, delegated to it after the line-level
     /// lookup so the boundary rule has exactly one implementation.
     /// </summary>
     public (int Row, int Cell) Locate(int srcOffset, bool endAffinity = false)
@@ -163,7 +166,7 @@ public sealed class BlockRunMap : ICaretMap
         int line = LineOfSrcOffset(srcOffset);
 
         // A terminator-interior offset (which no cell renders) clamps to the line's text end —
-        // WrappedLine then lands it on its last row's visual end. End affinity never crosses a
+        // TextLayout then lands it on its last row's visual end. End affinity never crosses a
         // hard line break: the offset resolves to ONE line first, and the affinity rule applies
         // only to that line's soft-wrap boundaries.
         int col = Math.Min(srcOffset - _lineSrcStart[line], _lineTexts[line].Length);
@@ -174,7 +177,7 @@ public sealed class BlockRunMap : ICaretMap
     /// <summary>
     /// Maps a visual (<paramref name="row"/>, <paramref name="cell"/>) back to a block-relative
     /// source offset: the grapheme-cluster boundary at or before the cell, clamped to the row's
-    /// content — <see cref="WrappedLine.ColAt"/>'s goal-column landing rule (cells inside a wide
+    /// content — <see cref="TextLayout.OffsetAt"/>'s goal-column landing rule (cells inside a wide
     /// cluster snap before it), delegated after the line-level lookup.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="row"/> is out of range.</exception>
@@ -184,7 +187,7 @@ public sealed class BlockRunMap : ICaretMap
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(row, _rows.Length);
 
         int line = _rows[row].Line;
-        return _lineSrcStart[line] + _wrapped[line].ColAt(row - _lineFirstRow[line], cell);
+        return _lineSrcStart[line] + _wrapped[line].OffsetAt(row - _lineFirstRow[line], cell);
     }
 
     /// <summary>
@@ -212,11 +215,12 @@ public sealed class BlockRunMap : ICaretMap
         ArgumentOutOfRangeException.ThrowIfNegative(row);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(row, _rows.Length);
 
-        var text = RowText(row);
-        int before = CaretNavigator.ColAtOrBeforeCell(text, cell);
-        int after = CaretNavigator.NextCluster(text, before);
+        int line = _rows[row].Line;
+        var glyphs = _wrapped[line].LineGlyphs(row - _lineFirstRow[line]); // the row's line-local cluster layout
+        int before = glyphs.CharIndexAtOrBeforeColumn(cell);
+        int after = glyphs.NextBoundary(before);
         int chosen = after == before
-            || cell - CaretNavigator.CellOfCol(text, before) <= CaretNavigator.CellOfCol(text, after) - cell
+            || cell - glyphs.ColumnOf(before) <= glyphs.ColumnOf(after) - cell
             ? before
             : after;
 

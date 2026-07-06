@@ -1,6 +1,6 @@
 using System.Text;
 
-using Cursorial.Text;
+using Cursorial.Rendering.Text;
 
 using CursorialEdit.Document.Buffer;
 using CursorialEdit.Document.Model;
@@ -143,7 +143,7 @@ public sealed class TableEditingController
             return TableCommand.NoOperation; // at (or before) the cell's content start — nothing to delete in-cell
 
         string line = _buffer.GetLine(caret.Line).Text;
-        int prev = PrevCluster(line, caret.Col);
+        int prev = GraphemeLayout.Build(line).PrevBoundary(caret.Col);
         if (prev >= caret.Col)
             return TableCommand.NoOperation;
 
@@ -172,7 +172,7 @@ public sealed class TableEditingController
             return TableCommand.NoOperation; // at (or past) the cell's content end — nothing to delete in-cell
 
         string line = _buffer.GetLine(caret.Line).Text;
-        int next = NextCluster(line, caret.Col);
+        int next = GraphemeLayout.Build(line).NextBoundary(caret.Col);
         if (next <= caret.Col)
             return TableCommand.NoOperation;
 
@@ -352,45 +352,6 @@ public sealed class TableEditingController
     }
 
     private static bool IsPad(char c) => c is ' ' or '\t';
-
-    // ───────────────────────────── cluster boundaries (single-line) ─────────────────────────────
-    // Note (cleanup 10): these mirror CaretNavigator.Prev/NextCluster, but that lives in the app-layer
-    // CursorialEdit.Layout project, which references this (Document) project — not the other way round — so
-    // it is unreachable here. A shared grapheme-boundary helper would have to move down into Document (or
-    // Cursorial.Text) to dedup; out of scope for this WP, so the single-line copies stay.
-
-    private static int PrevCluster(ReadOnlySpan<char> line, int col)
-    {
-        col = Math.Clamp(col, 0, line.Length);
-        int best = 0;
-        int boundary = 0;
-        var e = line.GetGraphemeEnumerator();
-        while (e.MoveNext())
-        {
-            boundary += e.Current.Length;
-            if (boundary >= col)
-                break;
-            best = boundary;
-        }
-
-        return best;
-    }
-
-    private static int NextCluster(ReadOnlySpan<char> line, int col)
-    {
-        col = Math.Clamp(col, 0, line.Length);
-        int boundary = 0;
-        var e = line.GetGraphemeEnumerator();
-        while (e.MoveNext())
-        {
-            int next = boundary + e.Current.Length;
-            if (next > col)
-                return next;
-            boundary = next;
-        }
-
-        return line.Length;
-    }
 }
 
 /// <summary>

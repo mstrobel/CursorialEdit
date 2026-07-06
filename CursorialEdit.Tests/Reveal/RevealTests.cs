@@ -248,12 +248,13 @@ public sealed class RevealTests
 
         // Walk the caret RIGHT one cluster at a time to the end, then LEFT back to the start; at every
         // stop the caret sits on a cluster boundary, inside the visible span, on a drawable column.
+        var glyphs = GraphemeLayout.Build(line);
         var forward = ClusterOffsets(line);
         var caretScript = forward.Concat(Enumerable.Reverse(forward)).ToArray();
 
         foreach (int caret in caretScript)
         {
-            Assert.True(CaretNavigator.IsClusterBoundary(line, caret), $"scripted caret {caret} is not a cluster boundary");
+            Assert.True(glyphs.PinToBoundary(caret) == caret, $"scripted caret {caret} is not a cluster boundary");
             slide = AssertCaretVisibleAndOnGrapheme(harness, presenter, caret, slide, columns);
         }
     }
@@ -280,7 +281,7 @@ public sealed class RevealTests
             text += chunk;
             harness.SetText(block: 0, text);
             harness.SetActive(block: 0, activeLine: 0, slide);
-            Assert.True(CaretNavigator.IsClusterBoundary(text, text.Length));
+            Assert.True(GraphemeLayout.Build(text).PinToBoundary(text.Length) == text.Length);
             slide = AssertCaretVisibleAndOnGrapheme(harness, presenter, caret: text.Length, slide, columns);
         }
 
@@ -317,11 +318,12 @@ public sealed class RevealTests
     /// <summary>Every cluster-boundary offset of <paramref name="line"/>, ascending (0 … length).</summary>
     private static int[] ClusterOffsets(string line)
     {
+        var glyphs = GraphemeLayout.Build(line);
         var offsets = new List<int> { 0 };
         int col = 0;
         while (col < line.Length)
         {
-            col = CaretNavigator.NextCluster(line, col);
+            col = glyphs.NextBoundary(col);
             offsets.Add(col);
         }
 

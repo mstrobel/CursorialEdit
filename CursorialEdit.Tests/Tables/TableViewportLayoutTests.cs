@@ -15,7 +15,7 @@ namespace CursorialEdit.Tests.Tables;
 /// 2026-07-05; spec §5.1). Two behaviours the old content-clamped <c>[3, 40]</c> cap got wrong:
 /// <list type="bullet">
 /// <item><b>Word wrap.</b> A cell wider than its column now wraps at WORD boundaries (reusing the same
-/// framework word-wrap the prose blocks use — <see cref="CaretNavigator.Wrap"/> / <c>WordWrap</c>), with a
+/// framework word-wrap the prose blocks use — <see cref="Cursorial.Rendering.Text.TextLayout.Build"/> / <c>WordWrap</c>), with a
 /// char-level fallback only for a single over-long word, and never a split grapheme cluster.</item>
 /// <item><b>Viewport-aware widths.</b> Column widths depend on the available viewport (known at measure time,
 /// threaded in by <see cref="TablePresenter"/>): a table that fits grows its columns to content (may exceed the

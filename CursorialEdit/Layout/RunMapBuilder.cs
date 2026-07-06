@@ -13,8 +13,8 @@ namespace CursorialEdit.Layout;
 /// inline runs (architecture Decision 8 / §2.4). The builder is the sole place that decides, per
 /// source line, which spans are visible text, which are syntax marks (hidden or — on the active line
 /// — revealed), and which structural prefixes become synthetic glyphs; from that classification it
-/// renders each line to a display string, wraps it through the probed M1
-/// <see cref="CaretNavigator.Wrap"/>, and assembles the per-visual-row runs plus the clip clusters.
+/// renders each line to a display string, wraps it through the framework
+/// <see cref="TextLayout.Build"/>, and assembles the per-visual-row runs plus the clip clusters.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -99,7 +99,7 @@ public static class RunMapBuilder
         string blockText = BuildBlockText(lines, sourceLength);
         var (mark, content, style) = ClassifyMarks(blockText, inlineRuns, kind, lineSrcStart, lineTextLen);
 
-        var wrapped = new WrappedLine[lineCount];
+        var wrapped = new TextLayout[lineCount];
         var srcToDisplay = new int[lineCount][];
         var displayToSrc = new int[lineCount][];
         var lineFirstRow = new int[lineCount + 1];
@@ -125,17 +125,17 @@ public static class RunMapBuilder
             // A revealed line is force-unwrapped only in SLIDE mode; in wrap-reveal it wraps in place under
             // the block's wrapMode (marks shown), so a prose paragraph keeps its context while edited.
             var lineWrap = revealed && revealSlides ? WrapMode.NoWrap : wrapMode;
-            wrapped[i] = CaretNavigator.Wrap(display, wrapWidth, lineWrap);
+            wrapped[i] = TextLayout.Build(display, wrapWidth, lineWrap);
             srcToDisplay[i] = toDisplay;
             displayToSrc[i] = toSrc;
             lineFirstRow[i] = rowRuns.Count;
 
-            for (var r = 0; r < wrapped[i].RowCount; r++)
+            for (var r = 0; r < wrapped[i].LineCount; r++)
             {
                 var (runs, cells) = BuildRow(display, wrapped[i], r, pieces);
                 rowRuns.Add(runs);
                 rowCells.Add(cells);
-                rowWidth.Add(wrapped[i].RowWidth(r));
+                rowWidth.Add(wrapped[i].LineWidth(r));
                 rowLine.Add(i);
             }
         }
@@ -185,7 +185,7 @@ public static class RunMapBuilder
         var content = new bool[sourceLength];
         var style = new RunStyle[sourceLength];
 
-        var wrapped = new WrappedLine[lineCount];
+        var wrapped = new TextLayout[lineCount];
         var srcToDisplay = new int[lineCount][];
         var displayToSrc = new int[lineCount][];
         var lineFirstRow = new int[lineCount + 1];
@@ -202,17 +202,17 @@ public static class RunMapBuilder
                 marker: SegKind.Content, markerStart: 0, markerLen: 0, hardBreakLen: 0, revealed: false,
                 out string display, out int[] toDisplay, out int[] toSrc);
 
-            wrapped[i] = CaretNavigator.Wrap(display, wrapWidth, WrapMode.NoWrap);
+            wrapped[i] = TextLayout.Build(display, wrapWidth, WrapMode.NoWrap);
             srcToDisplay[i] = toDisplay;
             displayToSrc[i] = toSrc;
             lineFirstRow[i] = rowRuns.Count;
 
-            for (var r = 0; r < wrapped[i].RowCount; r++)
+            for (var r = 0; r < wrapped[i].LineCount; r++)
             {
                 var (runs, cells) = BuildRow(display, wrapped[i], r, pieces);
                 rowRuns.Add(runs);
                 rowCells.Add(cells);
-                rowWidth.Add(wrapped[i].RowWidth(r));
+                rowWidth.Add(wrapped[i].LineWidth(r));
                 rowLine.Add(i);
             }
         }
@@ -610,11 +610,11 @@ public static class RunMapBuilder
 
     // ───────────────────────────── per-row assembly ─────────────────────────────
 
-    private static (Run[] Runs, RowCluster[] Cells) BuildRow(string display, WrappedLine wrapped, int row, List<PieceRun> pieces)
+    private static (Run[] Runs, RowCluster[] Cells) BuildRow(string display, TextLayout wrapped, int row, List<PieceRun> pieces)
     {
-        int a = wrapped.RowStart(row);
-        int b = wrapped.RowEnd(row);
-        bool lastRow = row == wrapped.RowCount - 1;
+        int a = wrapped.LineContentStart(row);
+        int b = wrapped.LineContentEnd(row);
+        bool lastRow = row == wrapped.LineCount - 1;
 
         var runs = new List<Run>();
         var cells = new List<RowCluster>();

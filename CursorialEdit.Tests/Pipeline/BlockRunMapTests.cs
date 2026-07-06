@@ -37,7 +37,7 @@ public sealed class BlockRunMapTests
     }
 
     [Fact]
-    public void WrappedLine_RowsFollowCaretNavigatorWrap()
+    public void WrappedLine_RowsFollowTextLayoutWrap()
     {
         // Wrap28Fixture: 10 a's + space + 22 b's; width 28 breaks after the space → [0,11) + [11,33).
         var map = BlockRunMap.Build([L(NavigationFixtures.Wrap28Fixture)], wrapWidth: 28);

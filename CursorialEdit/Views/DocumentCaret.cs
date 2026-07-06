@@ -1,3 +1,4 @@
+using Cursorial.Rendering.Text;
 using Cursorial.UI;
 
 using CursorialEdit.Document.Buffer;
@@ -20,13 +21,13 @@ namespace CursorialEdit.Views;
 /// <remarks>
 /// <para>
 /// <b>Coordinates and invariants.</b> Every position this class produces is buffer-valid and
-/// grapheme-cluster-snapped (<see cref="CaretNavigator"/> produces all landings — the WP4 fuzz
+/// grapheme-cluster-snapped (<see cref="GraphemeLayout"/> produces all landings — the WP4 fuzz
 /// invariant). The goal column is stored in <b>cells</b> and re-applied per landing row
 /// (§3.1 [EDGE]); it survives a vertical run and is forgotten by any non-vertical operation,
 /// mirroring the framework <c>TextBox</c>'s sticky <c>_desiredColumn</c>. End-of-row
 /// <b>affinity</b> disambiguates a caret col sitting exactly on a soft-wrap boundary (one source
 /// position, two visual positions): End and vertical landings keep the earlier row's visual end,
-/// Right/Home/typing take the next row's start — <see cref="WrappedLine"/>'s probed contract.
+/// Right/Home/typing take the next row's start — <see cref="TextLayout"/>'s probed contract.
 /// </para>
 /// <para>
 /// <b>Mutations.</b> Editing operations build <see cref="Edit"/>s and funnel them through
@@ -259,7 +260,7 @@ internal sealed class DocumentCaret : ISelectionSource
     {
         string text = _buffer.GetLine(pos.Line).Text;
         if (pos.Col < text.Length)
-            return new(pos.Line, CaretNavigator.NextCluster(text, pos.Col));
+            return new(pos.Line, GraphemeLayout.Build(text).NextBoundary(pos.Col));
         if (pos.Line < _buffer.LineCount - 1)
             return new(pos.Line + 1, 0);
         return null;
@@ -269,7 +270,7 @@ internal sealed class DocumentCaret : ISelectionSource
     private TextPosition? RawPrev(TextPosition pos)
     {
         if (pos.Col > 0)
-            return new(pos.Line, CaretNavigator.PrevCluster(_buffer.GetLine(pos.Line).Text, pos.Col));
+            return new(pos.Line, GraphemeLayout.Build(_buffer.GetLine(pos.Line).Text).PrevBoundary(pos.Col));
         if (pos.Line > 0)
             return new(pos.Line - 1, _buffer.GetLine(pos.Line - 1).Text.Length);
         return null;
@@ -495,9 +496,10 @@ internal sealed class DocumentCaret : ISelectionSource
             while (end < text.Length && char.IsWhiteSpace(text[end])) end++;
         }
 
+        var glyphs = GraphemeLayout.Build(text);
         SetState(
-            new(pos.Line, CaretNavigator.SnapToCluster(text, end)),
-            new TextPosition(pos.Line, CaretNavigator.SnapToCluster(text, start)),
+            new(pos.Line, glyphs.PinToBoundary(end)),
+            new TextPosition(pos.Line, glyphs.PinToBoundary(start)),
             endAffinity: false);
     }
 
@@ -640,7 +642,7 @@ internal sealed class DocumentCaret : ISelectionSource
         if (pos.Col > 0)
         {
             string text = _buffer.GetLine(pos.Line).Text;
-            int prev = CaretNavigator.PrevCluster(text, pos.Col);
+            int prev = GraphemeLayout.Build(text).PrevBoundary(pos.Col);
             ApplyEdit(new Edit(new(pos.Line, prev), text[prev..pos.Col], string.Empty), EditKind.Typing);
         }
         else if (pos.Line > 0)
@@ -683,7 +685,7 @@ internal sealed class DocumentCaret : ISelectionSource
         var line = _buffer.GetLine(pos.Line);
         if (pos.Col < line.Text.Length)
         {
-            int next = CaretNavigator.NextCluster(line.Text, pos.Col);
+            int next = GraphemeLayout.Build(line.Text).NextBoundary(pos.Col);
             ApplyEdit(new Edit(pos, line.Text[pos.Col..next], string.Empty), EditKind.Typing);
         }
         else if (pos.Line < _buffer.LineCount - 1)
@@ -1135,6 +1137,6 @@ internal sealed class DocumentCaret : ISelectionSource
     {
         int line = Math.Clamp(pos.Line, 0, _buffer.LineCount - 1);
         string text = _buffer.GetLine(line).Text;
-        return new(line, CaretNavigator.SnapToCluster(text, Math.Clamp(pos.Col, 0, text.Length)));
+        return new(line, GraphemeLayout.Build(text).PinToBoundary(Math.Clamp(pos.Col, 0, text.Length)));
     }
 }

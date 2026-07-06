@@ -1,8 +1,6 @@
 using Cursorial.Rendering.Text;
 using Cursorial.Text;
 
-using CursorialEdit.Layout;
-
 using MdTable = Markdig.Extensions.Tables.Table;
 using MdTableRow = Markdig.Extensions.Tables.TableRow;
 using MdTableCell = Markdig.Extensions.Tables.TableCell;
@@ -670,7 +668,7 @@ public sealed class TableModel
 
     /// <summary>
     /// Word-wraps one cell's trimmed content to <paramref name="width"/> cells (M3 risk a), reusing the
-    /// <b>same framework word-wrap the prose blocks use</b> — <see cref="CaretNavigator.Wrap"/> under
+    /// <b>same framework word-wrap the prose blocks use</b> — <see cref="TextLayout.Build"/> under
     /// <see cref="WrapMode.WordWrap"/>: breaks land at word boundaries; a single word longer than the column
     /// hard-breaks at the overflowing grapheme cluster (the char-level fallback, only for an over-long word);
     /// and every break is a grapheme-cluster boundary, so a wide cluster is never halved. The segments tile
@@ -684,7 +682,7 @@ public sealed class TableModel
             return [new CellFragment(srcStart, 0, 0)];
 
         int budget = Math.Max(1, width);
-        var wrapped = CaretNavigator.Wrap(text, budget, WrapMode.WordWrap);
+        var wrapped = TextLayout.Build(text, budget, WrapMode.WordWrap);
         var textSpan = text.AsSpan();
 
         // A cell renders TRIMMED content per visual row — unlike prose, whose soft wrap keeps a trailing space.
@@ -692,11 +690,11 @@ public sealed class TableModel
         // aligned wrapped line stays flush to its edge, and a word that exactly fills the column doesn't spill
         // the following space as its own blank row); the SOURCE range still spans the full segment so the
         // fragments tile the cell and the caret round-trips (the trimmed space stays attributed to its source).
-        var fragments = new List<CellFragment>(wrapped.RowCount);
-        for (var v = 0; v < wrapped.RowCount; v++)
+        var fragments = new List<CellFragment>(wrapped.LineCount);
+        for (var v = 0; v < wrapped.LineCount; v++)
         {
-            int start = wrapped.RowStart(v);
-            int end = wrapped.RowEnd(v);
+            int start = wrapped.LineContentStart(v);
+            int end = wrapped.LineContentEnd(v);
 
             int renderEnd = end;
             while (renderEnd > start && (textSpan[renderEnd - 1] == ' ' || textSpan[renderEnd - 1] == '\t'))
@@ -710,7 +708,7 @@ public sealed class TableModel
                 continue;
             }
 
-            int renderWidth = wrapped.RowWidth(v) - (end - renderEnd); // each trimmed trailing char is a width-1 space/tab
+            int renderWidth = wrapped.LineWidth(v) - (end - renderEnd); // each trimmed trailing char is a width-1 space/tab
             fragments.Add(new CellFragment(srcStart + start, end - start, renderWidth));
         }
 

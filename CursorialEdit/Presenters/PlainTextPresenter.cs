@@ -1,6 +1,7 @@
 using Cursorial.Drawing.Media;
 using Cursorial.Output;
 using Cursorial.Rendering;
+using Cursorial.Rendering.Text;
 using Cursorial.UI;
 using Cursorial.UI.Controls;
 using Cursorial.UI.Themes;
@@ -117,8 +118,9 @@ public sealed class PlainTextPresenter : UIElement
     /// <summary>Draws one row split around its selected slice <c>[from, to)</c> (row-text-relative cluster boundaries).</summary>
     private void DrawSelectedRow(RenderContext context, int row, ReadOnlySpan<char> text, int from, int to, IBrush foreground)
     {
-        int fromCell = CaretNavigator.CellOfCol(text, from);
-        int toCell = CaretNavigator.CellOfCol(text, to);
+        var glyphs = GraphemeLayout.Build(text.ToString());
+        int fromCell = glyphs.ColumnOf(from);
+        int toCell = glyphs.ColumnOf(to);
 
         if (from > 0)
             context.DrawText(0, row, text[..from], foreground);

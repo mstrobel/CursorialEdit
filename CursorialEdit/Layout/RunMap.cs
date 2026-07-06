@@ -17,7 +17,7 @@ namespace CursorialEdit.Layout;
 /// <para>
 /// <b>Reuse of the M1 wrap.</b> Each line is rendered to a display string (marks hidden collapse to
 /// nothing, revealed marks and synthetic glyphs occupy cells) and wrapped through
-/// <see cref="CaretNavigator.Wrap"/>/<see cref="WrappedLine"/> — so wrap points, end-of-line
+/// <see cref="TextLayout.Build"/>/<see cref="TextLayout"/> — so wrap points, end-of-line
 /// affinity, and cluster/cell math are exactly the probed M1 behavior. When a line carries no marks
 /// (plain text, or the degenerate empty-inline-run case) the display string equals the source and the
 /// mapping is bit-for-bit M1's; the mark and synthetic runs are additive on top.
@@ -47,7 +47,7 @@ public sealed class RunMap : ICaretMap
     private readonly int[] _rowLine;           // which source line this row belongs to
 
     // ── per source line ──
-    private readonly WrappedLine[] _wrapped;   // the display string's soft-wrap (marks resolved)
+    private readonly TextLayout[] _wrapped;    // the display string's soft-wrap (marks resolved)
     private readonly int[][] _srcToDisplay;    // line col → display-string index (length textLen+1)
     private readonly int[][] _displayToSrc;    // display-string index → block-relative source offset
     private readonly int[] _lineFirstRow;      // prefix sums: line i's first visual row; [lineCount] = RowCount
@@ -56,7 +56,7 @@ public sealed class RunMap : ICaretMap
 
     internal RunMap(
         Run[][] rowRuns, RowCluster[][] rowCells, int[] rowWidth, int[] rowLine,
-        WrappedLine[] wrapped, int[][] srcToDisplay, int[][] displayToSrc,
+        TextLayout[] wrapped, int[][] srcToDisplay, int[][] displayToSrc,
         int[] lineFirstRow, int[] lineSrcStart, int[] lineTextLen,
         int sourceLength, int wrapWidth, WrapMode wrapMode, int? activeLine)
     {
@@ -168,7 +168,7 @@ public sealed class RunMap : ICaretMap
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(row, RowCount);
 
         int line = _rowLine[row];
-        int display = _wrapped[line].ColAt(row - _lineFirstRow[line], cell);
+        int display = _wrapped[line].OffsetAt(row - _lineFirstRow[line], cell);
         return _displayToSrc[line][display];
     }
 

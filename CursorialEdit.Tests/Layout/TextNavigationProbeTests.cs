@@ -14,8 +14,10 @@ namespace CursorialEdit.Tests.Layout;
 /// <summary>
 /// M1.WP6 — the R4 probe (implementation-plan §6 WP6; architecture risk R4 / FB-1): drives a REAL
 /// multi-line <see cref="TextBox"/> (<c>AcceptsReturn</c>, <c>TextWrapping</c> on) under
-/// <see cref="UITestHost"/> and the app-side <see cref="CaretNavigator"/> over IDENTICAL grapheme
-/// fixtures, comparing caret landings for Left/Right cluster steps, Ctrl+Left/Right word motion,
+/// <see cref="UITestHost"/> and the promoted framework text primitives (<see cref="GraphemeLayout"/>,
+/// <see cref="TextNavigation"/>, <see cref="TextLayout"/> — the editor now consumes these directly,
+/// FB-1 retired) over IDENTICAL grapheme fixtures, comparing caret landings for Left/Right cluster
+/// steps, Ctrl+Left/Right word motion,
 /// Up/Down goal-column over soft-wrapped rows, and Home/End end-of-line affinity. Logical landings are
 /// read from the public <see cref="TextBox.CaretIndex"/>; the <b>visual</b> position (the affinity
 /// observable — which visual row a wrap-boundary caret renders on) is readable only via rendering, so
@@ -27,8 +29,31 @@ public sealed class TextNavigationProbeTests
     /// <summary>Both §5.1 wire presets — the shared registry (<see cref="TestSupport.CapabilityPresets"/>).</summary>
     public static TheoryData<string> Presets => TestSupport.CapabilityPresets.Both;
 
-    // Fixtures shared with CaretNavigatorTests live in NavigationFixtures (same cluster
-    // inventory, same hand-computed maps — identical by construction).
+    // Fixtures live in NavigationFixtures (hand-computed cluster inventory + display-cell maps).
+
+    // Single-line vertical/Home/End oracles: the sticky-goal + affinity composition the WP8 caret owns
+    // (over ICaretMap), expressed here purely through the promoted TextLayout's row/column accessors —
+    // no mirrored line-packer, so what the probe compares against TextBox is the framework primitive.
+
+    private static (int Col, int Cell, bool EndAffinity) MoveVertical(
+        TextLayout layout, int col, int delta, int desiredCell = -1, bool endAffinity = false)
+    {
+        var (row, cell) = layout.Locate(col, endAffinity);
+        int goal = desiredCell >= 0 ? desiredCell : cell;
+        int targetRow = Math.Clamp(row + delta, 0, layout.LineCount - 1);
+        int targetCol = layout.OffsetAt(targetRow, goal);
+        return (targetCol, goal, layout.IsLineEndBoundary(targetRow, targetCol));
+    }
+
+    private static (int Col, bool EndAffinity) EndCol(TextLayout layout, int col, bool endAffinity = false)
+    {
+        int row = layout.Locate(col, endAffinity).Line;
+        int end = layout.LineContentEnd(row);
+        return (end, layout.IsLineEndBoundary(row, end));
+    }
+
+    private static int HomeCol(TextLayout layout, int col, bool endAffinity = false)
+        => layout.LineContentStart(layout.Locate(col, endAffinity).Line);
 
     // ───────────────────────────── Left / Right cluster steps ─────────────────────────────
 
@@ -37,16 +62,17 @@ public sealed class TextNavigationProbeTests
     public void RightThenLeft_StepsClusterBoundaries_TextBoxAndNavigatorAgree(string preset)
     {
         using var probe = TextBoxProbe.Create(ClusterFixture, preset);
+        var glyphs = GraphemeLayout.Build(ClusterFixture);
 
-        // Walk Right to the end: every landing must be the navigator's NextCluster, and the terminal
-        // cursor must sit at the landing's cell (CellOfCol) — the wide clusters advance 2 cells.
+        // Walk Right to the end: every landing must be the primitive's NextBoundary, and the terminal
+        // cursor must sit at the landing's column (ColumnOf) — the wide clusters advance 2 cells.
         var col = 0;
         while (col < ClusterFixture.Length)
         {
-            var expected = CaretNavigator.NextCluster(ClusterFixture, col);
+            var expected = glyphs.NextBoundary(col);
             probe.Press(Key.RightArrow);
             Assert.Equal(expected, probe.CaretIndex);
-            probe.AssertCursorAt(CaretNavigator.CellOfCol(ClusterFixture, expected), 0, $"Right from col {col}");
+            probe.AssertCursorAt(glyphs.ColumnOf(expected), 0, $"Right from col {col}");
             col = expected;
         }
 
@@ -56,10 +82,10 @@ public sealed class TextNavigationProbeTests
         // Walk Left back to the start symmetrically.
         while (col > 0)
         {
-            var expected = CaretNavigator.PrevCluster(ClusterFixture, col);
+            var expected = glyphs.PrevBoundary(col);
             probe.Press(Key.LeftArrow);
             Assert.Equal(expected, probe.CaretIndex);
-            probe.AssertCursorAt(CaretNavigator.CellOfCol(ClusterFixture, expected), 0, $"Left from col {col}");
+            probe.AssertCursorAt(glyphs.ColumnOf(expected), 0, $"Left from col {col}");
             col = expected;
         }
 
@@ -81,7 +107,7 @@ public sealed class TextNavigationProbeTests
         var col = 0;
         while (col < WordFixture.Length)
         {
-            var expected = CaretNavigator.NextWord(WordFixture, col);
+            var expected = TextNavigation.NextWord(WordFixture, col);
             probe.Press(Key.RightArrow, KeyModifiers.Control);
             Assert.Equal(expected, probe.CaretIndex);
             col = expected;
@@ -91,7 +117,7 @@ public sealed class TextNavigationProbeTests
 
         while (col > 0)
         {
-            var expected = CaretNavigator.PrevWord(WordFixture, col);
+            var expected = TextNavigation.PrevWord(WordFixture, col);
             probe.Press(Key.LeftArrow, KeyModifiers.Control);
             Assert.Equal(expected, probe.CaretIndex);
             col = expected;
@@ -104,15 +130,15 @@ public sealed class TextNavigationProbeTests
     /// but <c>TextBox</c>'s actual classifier (<c>TextNavigation</c>) is whitespace-delimited: from
     /// col 0 of <c>"foo, bar"</c> a letters/digits classifier would stop at 3 (end of <c>foo</c>) or
     /// 5 (start of <c>bar</c>); TextBox lands at 4 (after <c>foo,</c> — punctuation adheres). The
-    /// navigator mirrors TextBox because the probe's parity contract is the binding requirement; a
-    /// markdown-aware classifier is an M2 run-map decision, recorded under FB-1.
+    /// editor consumes the framework <c>TextNavigation</c> classifier verbatim, so this parity holds by
+    /// construction; a markdown-aware classifier is an M2 run-map decision, recorded under FB-1.
     /// </summary>
     [Fact]
     public void Divergence_WordClassifier_IsWhitespaceDelimited_NotLettersDigits()
     {
-        Assert.Equal(4, CaretNavigator.NextWord("foo, bar", 0));     // NOT 3, NOT 5
-        Assert.Equal(5, CaretNavigator.PrevWord("foo, bar!?", 10));  // "bar!?" is one word
-        Assert.Equal(15, CaretNavigator.NextWord(WordFixture, 12));  // unspaced CJK is one word, not per-ideograph
+        Assert.Equal(4, TextNavigation.NextWord("foo, bar", 0));     // NOT 3, NOT 5
+        Assert.Equal(5, TextNavigation.PrevWord("foo, bar!?", 10));  // "bar!?" is one word
+        Assert.Equal(15, TextNavigation.NextWord(WordFixture, 12));  // unspaced CJK is one word, not per-ideograph
     }
 
     [Theory]
@@ -123,7 +149,7 @@ public sealed class TextNavigationProbeTests
         using var probe = TextBoxProbe.Create(text, preset);
 
         probe.Press(Key.RightArrow, KeyModifiers.Control);
-        Assert.Equal(CaretNavigator.NextWord(text, 0), probe.CaretIndex);
+        Assert.Equal(TextNavigation.NextWord(text, 0), probe.CaretIndex);
         Assert.Equal(4, probe.CaretIndex); // after the emoji run — a cluster boundary
         probe.AssertCursorAt(4, 0, "Ctrl+Right over the emoji run"); // 2 wide cells + … = cell 4
     }
@@ -136,9 +162,9 @@ public sealed class TextNavigationProbeTests
     {
         using var probe = TextBoxProbe.Create(Wrap28Fixture, preset);
 
-        var wrapped = CaretNavigator.Wrap(Wrap28Fixture, probe.WrapWidth);
-        Assert.Equal(2, wrapped.RowCount); // fixture sanity
-        Assert.Equal(11, wrapped.RowStart(1));
+        var wrapped = TextLayout.Build(Wrap28Fixture, probe.WrapWidth, WrapMode.WordWrap);
+        Assert.Equal(2, wrapped.LineCount); // fixture sanity
+        Assert.Equal(11, wrapped.LineContentStart(1));
 
         // The rendered rows must break exactly where the navigator says: 10 a's (+ trailing space) on
         // row 0, all 22 b's on row 1 — no 'b' leaks onto row 0 and no 'a' onto row 1.
@@ -156,9 +182,9 @@ public sealed class TextNavigationProbeTests
     {
         using var probe = TextBoxProbe.Create(StraddleFixture, preset);
 
-        var wrapped = CaretNavigator.Wrap(StraddleFixture, probe.WrapWidth);
-        Assert.Equal(2, wrapped.RowCount);
-        Assert.Equal(27, wrapped.RowStart(1)); // 27 a's + 漢 = 29 cells > 28 → the CJK moves whole
+        var wrapped = TextLayout.Build(StraddleFixture, probe.WrapWidth, WrapMode.WordWrap);
+        Assert.Equal(2, wrapped.LineCount);
+        Assert.Equal(27, wrapped.LineContentStart(1)); // 27 a's + 漢 = 29 cells > 28 → the CJK moves whole
 
         var row0 = probe.RowText(0);
         var row1 = probe.RowText(1);
@@ -175,21 +201,21 @@ public sealed class TextNavigationProbeTests
     {
         using var probe = TextBoxProbe.Create(ThreeRowFixture, preset);
 
-        var wrapped = CaretNavigator.Wrap(ThreeRowFixture, probe.WrapWidth);
-        Assert.Equal(3, wrapped.RowCount); // "aaa…a " (28 cells) / "bb " (3) / 27 c's
+        var wrapped = TextLayout.Build(ThreeRowFixture, probe.WrapWidth, WrapMode.WordWrap);
+        Assert.Equal(3, wrapped.LineCount); // "aaa…a " (28 cells) / "bb " (3) / 27 c's
 
         probe.SetCaret(10); // row 0, cell 10
 
         // Down onto the 3-cell middle row: clamps to its end — which IS the next wrap col, so
         // end-affinity must keep the caret rendered on row 1 (col 31 aliases to row 2's start).
-        var (col1, goal, affinity1) = wrapped.MoveVertical(10, +1);
+        var (col1, goal, affinity1) = MoveVertical(wrapped, 10, +1);
         Assert.Equal((31, true), (col1, affinity1)); // fixture sanity (pinned)
         probe.Press(Key.DownArrow);
         Assert.Equal(col1, probe.CaretIndex);
         probe.AssertCursorAt(3, 1, "Down onto the short row (end-affinity)");
 
         // Down again: the goal column is sticky — row 2 lands back at cell 10, not cell 3.
-        var (col2, _, _) = wrapped.MoveVertical(col1, +1, goal, affinity1);
+        var (col2, _, _) = MoveVertical(wrapped, col1, +1, goal, affinity1);
         Assert.Equal(41, col2); // pinned
         probe.Press(Key.DownArrow);
         Assert.Equal(col2, probe.CaretIndex);
@@ -210,14 +236,14 @@ public sealed class TextNavigationProbeTests
     {
         using var probe = TextBoxProbe.Create(CjkRowFixture, preset);
 
-        var wrapped = CaretNavigator.Wrap(CjkRowFixture, probe.WrapWidth);
-        Assert.Equal(2, wrapped.RowCount);
+        var wrapped = TextLayout.Build(CjkRowFixture, probe.WrapWidth, WrapMode.WordWrap);
+        Assert.Equal(2, wrapped.LineCount);
 
         probe.SetCaret(5); // row 0, cell 5 (odd — falls between CJK boundaries on row 1)
 
         // Down: goal cell 5 falls inside the third 汉 (cells 4..6) → land at cell 4 (col 30), never
         // inside the cluster.
-        var (down, goal, _) = wrapped.MoveVertical(5, +1);
+        var (down, goal, _) = MoveVertical(wrapped, 5, +1);
         Assert.Equal((30, 5), (down, goal)); // pinned
         probe.Press(Key.DownArrow);
         Assert.Equal(down, probe.CaretIndex);
@@ -256,10 +282,10 @@ public sealed class TextNavigationProbeTests
     public void End_OnWrappedRow_LandsOnWrapColWithEndAffinity(string preset)
     {
         using var probe = TextBoxProbe.Create(Wrap28Fixture, preset);
-        var wrapped = CaretNavigator.Wrap(Wrap28Fixture, probe.WrapWidth);
+        var wrapped = TextLayout.Build(Wrap28Fixture, probe.WrapWidth, WrapMode.WordWrap);
 
         probe.SetCaret(3); // row 0
-        var (endCol, endAffinity) = wrapped.EndCol(3);
+        var (endCol, endAffinity) = EndCol(wrapped, 3);
         Assert.Equal((11, true), (endCol, endAffinity)); // pinned: End = the wrap col, end-affinity
 
         probe.Press(Key.End);
@@ -269,7 +295,7 @@ public sealed class TextNavigationProbeTests
 
         // Right from the boundary drops the affinity and steps into row 1.
         probe.Press(Key.RightArrow);
-        Assert.Equal(CaretNavigator.NextCluster(Wrap28Fixture, 11), probe.CaretIndex);
+        Assert.Equal(GraphemeLayout.Build(Wrap28Fixture).NextBoundary(11), probe.CaretIndex);
         probe.AssertCursorAt(1, 1, "Right after End steps into the next row");
     }
 
@@ -278,18 +304,18 @@ public sealed class TextNavigationProbeTests
     public void Home_OnWrapCol_RendersAtNextRowStart_SameColAsEndDifferentRow(string preset)
     {
         using var probe = TextBoxProbe.Create(Wrap28Fixture, preset);
-        var wrapped = CaretNavigator.Wrap(Wrap28Fixture, probe.WrapWidth);
+        var wrapped = TextLayout.Build(Wrap28Fixture, probe.WrapWidth, WrapMode.WordWrap);
 
         // Caret mid row 1; Home lands on col 11 with START affinity → renders at row 1 cell 0, even
         // though the SAME col rendered at row 0 cell 11 after End (the aliasing observable).
         probe.SetCaret(20);
-        Assert.Equal(11, wrapped.HomeCol(20)); // pinned
+        Assert.Equal(11, HomeCol(wrapped, 20)); // pinned
         probe.Press(Key.Home);
         Assert.Equal(11, probe.CaretIndex);
         probe.AssertCursorAt(0, 1, "Home renders at the next row's start");
 
         // End from there: row 1's End is the true line end — no aliasing, no affinity.
-        var (endCol, endAffinity) = wrapped.EndCol(11);
+        var (endCol, endAffinity) = EndCol(wrapped, 11);
         Assert.Equal((33, false), (endCol, endAffinity)); // pinned
         probe.Press(Key.End);
         Assert.Equal(endCol, probe.CaretIndex);
@@ -301,14 +327,14 @@ public sealed class TextNavigationProbeTests
     public void Home_AfterEnd_BelongsToTheWrappedRow(string preset)
     {
         using var probe = TextBoxProbe.Create(Wrap28Fixture, preset);
-        var wrapped = CaretNavigator.Wrap(Wrap28Fixture, probe.WrapWidth);
+        var wrapped = TextLayout.Build(Wrap28Fixture, probe.WrapWidth, WrapMode.WordWrap);
 
         probe.SetCaret(3);
         probe.Press(Key.End); // col 11, end-affinity (proven above)
 
         // Home consumes the affinity: the caret's row is row 0, so Home lands at col 0 — not row 1's
         // start (which is the same col the caret already sits on).
-        Assert.Equal(0, wrapped.HomeCol(11, endAffinity: true)); // pinned
+        Assert.Equal(0, HomeCol(wrapped, 11, endAffinity: true)); // pinned
         probe.Press(Key.Home);
         Assert.Equal(0, probe.CaretIndex);
         probe.AssertCursorAt(0, 0, "Home after End belongs to the wrapped row");
@@ -319,13 +345,13 @@ public sealed class TextNavigationProbeTests
     public void DownAfterEnd_UsesTheWrappedRowAsOrigin(string preset)
     {
         using var probe = TextBoxProbe.Create(Wrap28Fixture, preset);
-        var wrapped = CaretNavigator.Wrap(Wrap28Fixture, probe.WrapWidth);
+        var wrapped = TextLayout.Build(Wrap28Fixture, probe.WrapWidth, WrapMode.WordWrap);
 
         probe.SetCaret(3);
         probe.Press(Key.End); // col 11, end-affinity, cell 11 on row 0
 
         // Down resolves the caret's row via the affinity (row 0) and carries cell 11 down to row 1.
-        var (down, _, _) = wrapped.MoveVertical(11, +1, -1, endAffinity: true);
+        var (down, _, _) = MoveVertical(wrapped, 11, +1, -1, endAffinity: true);
         Assert.Equal(22, down); // pinned: row 1 start (11) + 11 cols
         probe.Press(Key.DownArrow);
         Assert.Equal(down, probe.CaretIndex);

@@ -1,11 +1,10 @@
 namespace CursorialEdit.Tests.Layout;
 
 /// <summary>
-/// The grapheme fixtures shared by <see cref="CaretNavigatorTests"/> (hand-computed pinned
-/// expectations) and <see cref="TextNavigationProbeTests"/> (the R4 TextBox parity probe). Both
-/// suites' design requires IDENTICAL fixtures — same cluster inventory, same hand-computed maps —
-/// and this single definition makes that true by construction: extending a fixture here extends
-/// both suites at once (a stale hand-computed map then fails the pinned tests loudly).
+/// The grapheme fixtures the <see cref="TextNavigationProbeTests"/> R4 TextBox-parity probe drives
+/// (hand-computed cluster inventory + display-cell maps). A single definition keeps the probe's
+/// fixtures and their pinned expectations in one place: extending a fixture here extends the probe at
+/// once (a stale hand-computed map then fails the pinned tests loudly).
 /// </summary>
 internal static class NavigationFixtures
 {

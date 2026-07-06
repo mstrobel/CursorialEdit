@@ -9,7 +9,7 @@ Disposition targets: **core** (Cursorial.* proper), **ext** (a Cursorial extensi
 
 ---
 
-## FB-1 — Make `TextLayout` / `GraphemeLayout` / `TextNavigation` public — `proposed` (core)
+## FB-1 — Make `TextLayout` / `GraphemeLayout` / `TextNavigation` public — `implemented (local)` / retired (core)
 
 `Cursorial.UI/Controls/TextEditing.cs` + `TextLayout.cs` contain exactly the machinery a custom text
 surface needs — offset↔(line,column) mapping with soft-wrap affinity, grapheme-cluster boundaries,
@@ -538,3 +538,38 @@ public `InputDispatcher.PreProcessInput` + `ProcessEvent`). Two gaps, both minor
   `Console.WindowWidth/Height`. A public `UIApplication.ViewportSize` (columns×rows) would let an app read
   the negotiated size directly. (All INPUT fields needed were public — `KeyEventArgs.Device`,
   `MouseEventArgs.Device`, `TextInputEventArgs.Text/FromPaste`, `ProcessEvent`, `NotifyResized`.)
+
+**FB-1 RETIRED (2026-07-05) — trio promoted, mirror deleted.** The three types are now `public` in
+`Cursorial.Rendering.Text` (`GraphemeLayout`/`TextNavigation` in `TextEditing.cs`, `TextLayout` in
+`TextLayout.cs`), Document-reachable (the Document project already referenced `Cursorial.Rendering` for
+`WrapMode`), so the editor now consumes them directly and the ~432-line app-side `CaretNavigator`/
+`WrappedLine` mirror (plus its dedicated unit test) is **deleted**. Adoption mapping used:
+`Wrap`→`TextLayout.Build`; `WrappedLine.{RowStart,RowEnd,RowWidth,RowCount,RowOfCol,ColAt,IsRowEndBoundary}`
+→`TextLayout.{LineContentStart,LineContentEnd,LineWidth,LineCount,Locate().Line,OffsetAt,IsLineEndBoundary}`;
+cluster steps `{Next,Prev,Snap}`→`GraphemeLayout.{NextBoundary,PrevBoundary,PinToBoundary}`; col↔cell
+`{CellOfCol,ColAtOrBeforeCell,ColAtOrAfterCell}`→`GraphemeLayout.{ColumnOf,CharIndexAtOrBeforeColumn,
+CharIndexAtOrAfterColumn}`; word motion→`TextNavigation.{NextWord,PrevWord}`.
+`TableEditingController`'s duplicated single-line cluster walkers (the "cleanup 10" copies, blocked because
+the mirror lived up in the app-layer `CursorialEdit.Layout`) are **deduped** onto `GraphemeLayout` now that
+the wall is gone. The R4 probe (`TextNavigationProbeTests`) was retargeted onto the promoted types and stays
+**zero-divergence** vs a live `TextBox` across CJK/emoji/ZWJ/VS/wrap-affinity; the whole suite is green.
+`TextPresenter.MoveVertical`'s sticky-goal stays app-side (`DocumentCaret`, over `ICaretMap`); the probe's
+single-line Up/Down/Home/End oracle is now a 3-line composition over `TextLayout.Locate`/`OffsetAt`/
+`IsLineEndBoundary` (no mirrored line-packer).
+
+Two minor hardening candidates surfaced during adoption (both **non-blocking** — behavior-neutral for the
+editor, filed only so the primitives can be tightened later):
+1. **`GraphemeLayout.Build` takes `string?` only, no `ReadOnlySpan<char>` overload.** Two cold call sites
+   that hold a span slice of a larger string (`PlainTextPresenter.DrawSelectedRow`, `TableCaretMap`) must
+   `slice.ToString()` to build a per-row layout — an avoidable allocation on the render/caret paths. A
+   `Build(ReadOnlySpan<char>)` overload (the enumerator it walks is already span-based) would remove it.
+   (`BlockRunMap.NearestOffset` sidesteps this by reusing the stored `TextLayout.LineGlyphs(row)` — the
+   per-visual-line layout is already built, so no span-Build is needed there.)
+2. **`TextNavigation.NextWord`/`PrevWord` do not pin the landing to a grapheme-cluster boundary**, whereas
+   the mirror did (`SnapToCluster` on the returned index, defensively). Behavior-neutral for every probed
+   fixture (a whitespace-delimited word run never ends mid-cluster in the tested inventory, and `TextBox`
+   itself doesn't pin — the probe stays green), and the editor's production word motion (`DocumentCaret`)
+   is its own visible-cluster walk that never calls these — so there is **no divergence to preserve** and
+   no editor-side wrapper was needed. Noting only as a theoretical robustness gap (a word run ending inside
+   a cluster that mixes whitespace + combining marks would land off-boundary); keep the classifier
+   whitespace-delimited (`TextBox` parity is the probe's pinned contract).
