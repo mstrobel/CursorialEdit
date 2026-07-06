@@ -85,10 +85,16 @@ internal sealed class TableCaretMap : ICaretMap
             if (r == 0)
                 rows.Add(new GridRow([])); // top border
 
+            // Per-cell reveal (Decision 9): the focused cell (the one the caret is in) maps its RAW content 1:1;
+            // every other cell maps its FORMATTED (marks-hidden) display through the same LayoutRow fragments the
+            // presenter draws — so a caret/click in a formatted cell lands on the right SOURCE offset even though
+            // the marks are hidden, and the active cell edits raw exactly as today.
+            int activeColumn = activeCell is { } a && a.Row == r ? a.Column : -1;
+
             if (overflow == TableOverflow.Truncate)
             {
-                // One content grid row per logical row; each cell mapped at full natural geometry (the drawn prefix
-                // and the focused-cell reveal both sit at these columns, so caret/click land consistently).
+                var layout = model.LayoutRow(r, metrics.ColumnWidths, TableOverflow.Truncate, activeColumn);
+                var visual = layout.VisualRows[0];
                 var stops = new List<Stop>(columns);
                 for (var c = 0; c < columns; c++)
                 {
@@ -99,21 +105,18 @@ internal sealed class TableCaretMap : ICaretMap
                         continue;
                     }
 
-                    var (start, end) = model.CellContentRange(r, c);
-                    int colWidth = metrics.ColumnWidth(c);
-                    int fullWidth = GraphemeWidth.StringWidth(model.CellContent(r, c));
-                    bool fits = fullWidth <= colWidth;
-                    // A cell that fits honours alignment; an over-wide (truncated/revealed) cell is left-anchored.
-                    int cellX = fits ? metrics.AlignedX(c, fullWidth) : metrics.ContentX(c);
-                    // The stop's WIDTH is the click-box, so it must match the DRAWN extent. A non-focused over-wide
-                    // cell draws only its clipped prefix, so its box clamps to the column — else it would swallow
-                    // clicks aimed at the visible cells drawn to its right. The FOCUSED cell draws in full (the
-                    // reveal overflows and overdraws its right neighbours), so its box spans the full content — a
-                    // click on the revealed overflow lands back in it, matching the overdrawn pixels. SrcLen stays
-                    // FULL either way, so Locate/OffsetAt map the whole content (the reveal's natural columns).
-                    bool isFocused = activeCell is { } a && a.Row == r && a.Column == c;
-                    int drawnWidth = fits || isFocused ? fullWidth : colWidth;
-                    stops.Add(new Stop(cellX, drawnWidth, start, end - start, Empty: false));
+                    if (c == activeColumn)
+                    {
+                        // The focused cell reveals its RAW content in full (overflowing its column), so its stop spans
+                        // the whole raw content at its natural geometry — a click on the revealed overflow round-trips.
+                        var (start, end) = model.CellContentRange(r, c);
+                        int fullWidth = GraphemeWidth.StringWidth(model.CellContent(r, c));
+                        int cellX = fullWidth <= metrics.ColumnWidth(c) ? metrics.AlignedX(c, fullWidth) : metrics.ContentX(c);
+                        stops.Add(new Stop(cellX, fullWidth, start, end - start, Empty: false));
+                        continue;
+                    }
+
+                    AddFragmentStops(stops, metrics, c, visual.Cell(c));
                 }
 
                 AddContentRow(rows, flatSrc, flatRow, flatStops, stops);
@@ -121,11 +124,11 @@ internal sealed class TableCaretMap : ICaretMap
                 continue;
             }
 
-            var layout = model.LayoutRow(r, metrics.ColumnWidths);
-            for (var v = 0; v < layout.VisualRowCount; v++)
+            var wrapLayout = model.LayoutRow(r, metrics.ColumnWidths, TableOverflow.Wrap, activeColumn);
+            for (var v = 0; v < wrapLayout.VisualRowCount; v++)
             {
                 var stops = new List<Stop>(columns);
-                var visual = layout.VisualRows[v];
+                var visual = wrapLayout.VisualRows[v];
                 for (var c = 0; c < columns; c++)
                 {
                     if (model.IsCellEmpty(r, c))
@@ -139,11 +142,7 @@ internal sealed class TableCaretMap : ICaretMap
                         continue;
                     }
 
-                    var fragment = visual.Cell(c);
-                    if (fragment.IsEmpty)
-                        continue; // this cell's content did not wrap this far — no stop on this visual row
-
-                    stops.Add(new Stop(metrics.AlignedX(c, fragment.Width), fragment.Width, fragment.SrcStart, fragment.SrcLength, Empty: false));
+                    AddFragmentStops(stops, metrics, c, visual.Cell(c));
                 }
 
                 AddContentRow(rows, flatSrc, flatRow, flatStops, stops);
@@ -167,6 +166,30 @@ internal sealed class TableCaretMap : ICaretMap
         }
 
         return new TableCaretMap(source, [.. rows], stopSrc, stopRow, stops2);
+    }
+
+    /// <summary>
+    /// Emits the caret stops for one cell fragment on a visual row. A <b>formatted</b> (marks-hidden) fragment
+    /// carries one styled run per content run — each 1:1 with a contiguous source slice, so it becomes one stop
+    /// whose display maps to source exactly like a plain cell (the hidden marks fall between runs and canonicalize
+    /// onto the adjacent content). A <b>raw</b> fragment (a plain cell, or the active cell) becomes one whole-cell
+    /// stop, byte-identical to the pre-formatting map.
+    /// </summary>
+    private static void AddFragmentStops(List<Stop> stops, TableGridMetrics metrics, int column, CellFragment fragment)
+    {
+        if (fragment.IsEmpty)
+            return; // this cell's content did not wrap this far — no stop on this visual row
+
+        if (fragment.StyledRuns is { Count: > 0 } styled)
+        {
+            int alignedX = fragment.Ellipsis ? metrics.ContentX(column) : metrics.AlignedX(column, fragment.Width);
+            foreach (var run in styled)
+                stops.Add(new Stop(alignedX + run.CellOffset, run.Width, run.SrcStart, run.SrcLength, Empty: false));
+            return;
+        }
+
+        int x = fragment.Ellipsis ? metrics.ContentX(column) : metrics.AlignedX(column, fragment.Width);
+        stops.Add(new Stop(x, fragment.Width, fragment.SrcStart, fragment.SrcLength, Empty: false));
     }
 
     /// <summary>Sorts one visual row's <paramref name="stops"/> by cell, appends them to the flat Locate index at the next grid row, and records the <see cref="GridRow"/>.</summary>

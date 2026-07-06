@@ -178,6 +178,12 @@ public sealed class Block
         // A leaf block's inline tree hangs off LeafBlock.Inline; a container block (quote, list,
         // alert, definition list) holds its inlines on nested leaves. Descendants() on the container
         // walks into those leaves; on a leaf it does not, so the leaf's own Inline is walked directly.
+        // Keep only runs that lie within this block's own serialized source. Descendants() on a node
+        // that links a document-global construct (a footnote/reference resolved to its definition
+        // elsewhere) or a container whose Markdig span exceeds its tile can surface foreign inlines
+        // pointing outside this block, and Markdig's precise spans can themselves overshoot on
+        // pathological input; a block-relative offset outside [0, SourceLength) is not part of this
+        // block's rendering, so it is dropped rather than emitted as an out-of-bounds slice.
         IEnumerable<Inline> inlines = MarkdigBlock switch
         {
             LeafBlock { Inline: { } inline } => inline.Descendants().OfType<Inline>(),
@@ -185,49 +191,6 @@ public sealed class Block
             _ => [],
         };
 
-        var runs = new List<InlineRun>();
-        foreach (var inline in inlines)
-        {
-            var span = inline.Span;
-            if (span.IsEmpty || span.Length <= 0)
-                continue;
-
-            // Keep only runs that lie within this block's own serialized source. Descendants() on a node
-            // that links a document-global construct (a footnote/reference resolved to its definition
-            // elsewhere) or a container whose Markdig span exceeds its tile can surface foreign inlines
-            // pointing outside this block, and Markdig's precise spans can themselves overshoot on
-            // pathological input; a block-relative offset outside [0, SourceLength) is not part of this
-            // block's rendering, so drop it rather than emit an out-of-bounds slice.
-            int start = span.Start - SourceStartOffset;
-            if (start < 0 || start + span.Length > SourceLength)
-                continue;
-
-            var kind = ClassifyInline(inline);
-            if (kind is { } k)
-                runs.Add(new InlineRun(start, span.Length, k));
-        }
-
-        return runs;
+        return InlineProjection.Project(inlines, SourceStartOffset, SourceLength);
     }
-
-    private static InlineRunKind? ClassifyInline(Inline inline) => inline switch
-    {
-        // Delimiter runs and transient parse scaffolding carry no reproducible run; skip them.
-        DelimiterInline => null,
-        LiteralInline => InlineRunKind.Text,
-        EmphasisInline e => e.DelimiterChar == '~' ? InlineRunKind.Strikethrough
-            : e.DelimiterCount >= 2 ? InlineRunKind.Strong
-            : InlineRunKind.Emphasis,
-        CodeInline => InlineRunKind.Code,
-        LinkInline { IsAutoLink: true } => InlineRunKind.AutoLink,
-        LinkInline { IsImage: true } => InlineRunKind.Image,
-        LinkInline => InlineRunKind.Link,
-        AutolinkInline => InlineRunKind.AutoLink,
-        Markdig.Extensions.Mathematics.MathInline => InlineRunKind.Math,
-        Markdig.Extensions.TaskLists.TaskList => InlineRunKind.TaskMarker,
-        Markdig.Extensions.Footnotes.FootnoteLink { IsBackLink: false } => InlineRunKind.FootnoteReference,
-        HtmlInline or HtmlEntityInline => InlineRunKind.Html,
-        LineBreakInline => InlineRunKind.LineBreak,
-        _ => InlineRunKind.Other,
-    };
 }

@@ -263,29 +263,35 @@ public sealed class TablePresenter : LeafBlockPresenter
     }
 
     /// <summary>
-    /// Records the caret's cell (<see cref="_activeCell"/>, tracked in BOTH modes so a resize can re-follow the
-    /// window to it) and, under Truncate, moves the focused-cell reveal there (the old row re-truncates, the new
-    /// row un-truncates) and drops the focus-dependent caret map. In Wrap mode only the tracking runs.
+    /// Records the caret's cell (<see cref="_activeCell"/>) and moves the per-cell reveal there (Decision 9): the
+    /// old row re-formats its previously-active cell, the new row reveals the caret's cell RAW. This applies in
+    /// BOTH overflow modes now — the active cell always shows raw markdown so the user edits in place. Under Wrap
+    /// the raw (wider) cell can wrap to more rows, so the row REFLOWS and the table height changes; under Truncate
+    /// the height is invariant. The focus-dependent caret map is dropped so the next query rebuilds.
     /// </summary>
     private void SetActiveCell((int Row, int Column)? cell)
     {
         if (_activeCell == cell)
             return;
 
-        if (_overflow == TableOverflow.Truncate)
-        {
-            if (_activeCell is { } prev && prev.Row < _rows.Count)
-                _rows[prev.Row].ActiveColumn = -1;
-            if (cell is { } now && now.Row < _rows.Count)
-                _rows[now.Row].ActiveColumn = now.Column;
+        if (_activeCell is { } prev && prev.Row < _rows.Count)
+            _rows[prev.Row].ActiveColumn = -1;
+        if (cell is { } now && now.Row < _rows.Count)
+            _rows[now.Row].ActiveColumn = now.Column;
 
-            // The Truncate caret map's focused-cell stop spans the full reveal (so a click on the revealed overflow
-            // round-trips and matches the overdrawn pixels) while non-focused cells clamp — so the map depends on
-            // the focused cell. Drop it so the next query rebuilds. (Wrap's map is focus-independent.)
-            _caretMap = null;
-        }
-
+        // The active cell renders RAW (1:1) and every other cell FORMATTED (marks hidden) — the map depends on the
+        // focused cell in both modes, so drop it and let the next query rebuild on the current geometry.
+        _caretMap = null;
         _activeCell = cell;
+
+        // A Wrap reflow (raw active cell wraps to more/fewer rows) changes the table height — recompute it and
+        // re-measure so the panel's prefix sums / scroll extent follow (MeasuredCallback → the bridge's RefreshHeight).
+        int newHeight = SumHeights();
+        if (newHeight != _height)
+        {
+            _height = newHeight;
+            InvalidateMeasure();
+        }
     }
 
     /// <summary>The per-logical-row child presenters (test observability — the committed per-row render boundaries).</summary>

@@ -171,10 +171,15 @@ built by the later table WPs — a half-fix now would be throwaway:
   `SelectionProvider` consultation, so a document selection spanning a table shows no highlight on it (the
   fallback composed it). Full table selection is the cell-rect model in WP8; the document-selection overlay
   lands there.
-- **#4 Inline markdown in cells renders literal (→ table polish).** A cell's `**bold**`/`` `code` ``/link
-  shows its raw syntax (Text runs from raw source), unlike the rest of the doc. The fallback also showed
-  literal, so not a strict regression — a rendering enhancement (project cell inline runs like block inlines).
-  Schedule with the table editing polish (post-WP4) or a dedicated cell-inline pass.
+- **#4 Inline markdown in cells renders literal (→ table polish). ✅ RESOLVED (2026-07-06).** Cells now render
+  WYSIWYG per Decision 9's per-cell reveal: an inactive cell shows its `**bold**`/`` `code` ``/`*italic*`/
+  `~~strike~~`/`[text](url)` FORMATTED (marks hidden, content styled like the prose paragraph path) and the
+  active cell (caret in it) reveals its RAW markdown, its row reflowing since the marks-hidden display is
+  narrower. `TableModel.CellInlineRuns` projects cell inlines via the shared `InlineProjection` (Markdig stays
+  in the Document project); a per-cell `CellFormat` mirrors `RunMapBuilder.ClassifyMarks`/`ClassifyLine`;
+  `LayoutRow` gained an `activeColumn` param; `TableRowPresenter`/`TableCaretMap` draw + map the styled runs;
+  and a plain cell renders byte-identically (raw path, no projection). See architecture.md Decision 9 / §2.5 and
+  `TableInlineFormatTests`.
 - **#7 Reconcile re-Refreshes every row each keystroke (→ WP5).** Even stable-geometry edits run
   `LayoutRow`+run-map+signature for all N rows (only the invalidation is 1-zone). In budget today (R3
   passes), but WP5's live-reflow is where "skip unchanged rows" + the incremental column recompute land —

@@ -97,6 +97,15 @@ internal sealed class TableRowPresenter : UIElement
             if (_activeColumn == value)
                 return;
             _activeColumn = value;
+
+            // Per-cell reveal (Decision 9): the active cell switches formatted↔raw, which re-derives this row's
+            // layout — under Wrap the raw (wider) cell can wrap to more/fewer visual rows, so the row REFLOWS and
+            // its height changes; under Truncate the height is invariant (one visual row) but its drawn content
+            // and caret stops change. Re-derive here (not just re-raster) so the row's fragments/run map match.
+            int oldHeight = _lines.Length;
+            _lines = BuildLines(out _signature);
+            if (_lines.Length != oldHeight)
+                InvalidateMeasure();
             InvalidateVisual();
         }
     }
@@ -247,7 +256,10 @@ internal sealed class TableRowPresenter : UIElement
                 if (slice.IsEmpty)
                     continue;
 
-                var style = line.IsHeader ? headerStyle : CellStyle.Default;
+                // A FORMATTED cell's Text run carries its inline formatting (bold/italic/strike/link → attributes,
+                // code → the code fill), composed with the header's bold exactly as the prose ParagraphPresenter
+                // styles the same inline kinds; a RAW cell (plain / active) carries RunStyle.None → the base style.
+                var (style, background) = ResolveTextStyle(run, line.IsHeader, headerFill);
 
                 // The rect (M3.WP8) owns the whole selection: a run in a rect column draws as a WHOLE-cell selection
                 // — routed through DrawCellText so the colour/NoColor decision lives in ONE place (fill-background on
@@ -256,7 +268,7 @@ internal sealed class TableRowPresenter : UIElement
                 var cellSelection = rowInRect
                     ? InRectColumns(run.Col, rect!.Value) ? CoverRun(run, selection) : default
                     : selection;
-                DrawCellText(context, col, row, slice, run.SrcStart, foreground, style, cellSelection);
+                DrawCellText(context, col, row, slice, run.SrcStart, foreground, background, style, cellSelection);
             }
 
             // Truncate reveal-on-focus (§5.6): the focused cell re-draws its FULL content on top of the truncated
@@ -384,7 +396,7 @@ internal sealed class TableRowPresenter : UIElement
             revealSelection = selection with { End = Math.Min(selection.End, start + boxPrefix) };
         }
 
-        DrawCellText(context, startCol, drawRow, content[..visLen], start, foreground, style, revealSelection);
+        DrawCellText(context, startCol, drawRow, content[..visLen], start, foreground, null, style, revealSelection);
     }
 
     /// <summary>The UTF-16 length of the longest whole-grapheme-cluster prefix of <paramref name="text"/> whose display width fits <paramref name="width"/> cells (never splitting a wide cluster).</summary>
@@ -437,13 +449,13 @@ internal sealed class TableRowPresenter : UIElement
     /// </summary>
     private void DrawCellText(
         RenderContext context, int x, int row, ReadOnlySpan<char> text, int srcStart,
-        IBrush foreground, CellStyle style, in CellSelection selection)
+        IBrush foreground, IBrush? background, CellStyle style, in CellSelection selection)
     {
         int relFrom = selection.Start - srcStart;
         int relTo = selection.End - srcStart;
         if (!selection.Active || relTo <= 0 || relFrom >= text.Length)
         {
-            context.DrawText(x, row, text, foreground, null, style);
+            context.DrawText(x, row, text, foreground, background, style);
             return;
         }
 
@@ -467,7 +479,7 @@ internal sealed class TableRowPresenter : UIElement
         if (selEnd < 0) { selEnd = text.Length; selEndCell = cell; }
 
         if (prefixEnd > 0)
-            context.DrawText(x, row, text[..prefixEnd], foreground, null, style);
+            context.DrawText(x, row, text[..prefixEnd], foreground, background, style);
 
         if (selEnd > prefixEnd)
         {
@@ -475,11 +487,38 @@ internal sealed class TableRowPresenter : UIElement
             if (selection.NoColor)
                 context.DrawText(selStartCell, row, selected, foreground, null, style.AddAttributes(TextAttributes.Inverse));
             else
-                context.DrawText(selStartCell, row, selected, foreground, selection.Brush, style);
+                context.DrawText(selStartCell, row, selected, foreground, selection.Brush, style); // selection fill replaces any code fill — no hole
         }
 
         if (selEnd < text.Length)
-            context.DrawText(selEndCell, row, text[selEnd..], foreground, null, style);
+            context.DrawText(selEndCell, row, text[selEnd..], foreground, background, style);
+    }
+
+    /// <summary>
+    /// The cell style + background a Text run draws with (§2.1): the run's inline <see cref="RunStyle"/> mapped to
+    /// <see cref="TextAttributes"/> (composed with the header's bold), and the code fill for a code run — the same
+    /// styling the prose <see cref="LeafBlockPresenter.StyleForContent"/> applies to the same inline kinds. A raw
+    /// cell's run carries <see cref="RunStyle.None"/>, so this reduces to the base header/plain style.
+    /// </summary>
+    private static (CellStyle Style, IBrush? Background) ResolveTextStyle(in Run run, bool isHeader, IBrush codeFill)
+    {
+        var attributes = MarkdownStyles.AttributesFor(run.Style);
+        if (isHeader)
+            attributes |= TextAttributes.Bold;
+        var background = (run.Style & RunStyle.Code) != 0 ? codeFill : null;
+        return (CellStyle.Default.WithAttributes(attributes), background);
+    }
+
+    /// <summary>Maps a Document <see cref="CellInlineStyle"/> to the app's <see cref="RunStyle"/> (identical flag layout; mapped explicitly so the two can evolve independently).</summary>
+    private static RunStyle ToRunStyle(CellInlineStyle style)
+    {
+        var result = RunStyle.None;
+        if ((style & CellInlineStyle.Bold) != 0) result |= RunStyle.Bold;
+        if ((style & CellInlineStyle.Italic) != 0) result |= RunStyle.Italic;
+        if ((style & CellInlineStyle.Strikethrough) != 0) result |= RunStyle.Strikethrough;
+        if ((style & CellInlineStyle.Code) != 0) result |= RunStyle.Code;
+        if ((style & CellInlineStyle.Link) != 0) result |= RunStyle.Link;
+        return result;
     }
 
     /// <summary>The resolved per-pass selection state (block-relative range + tier decoration) the fragment draw reads.</summary>
@@ -493,7 +532,9 @@ internal sealed class TableRowPresenter : UIElement
 
     private TableVisualLine[] BuildLines(out string signature)
     {
-        var layout = _model.LayoutRow(_logicalRow, _metrics.ColumnWidths, _overflow);
+        // Per-cell reveal (Decision 9): the active cell renders RAW in both overflow modes — under Wrap it wraps
+        // raw (the row reflows); under Truncate its raw prefix is the base the DrawActiveReveal overlay reveals full.
+        var layout = _model.LayoutRow(_logicalRow, _metrics.ColumnWidths, _overflow, _activeColumn);
         bool isLast = _logicalRow == _model.RowCount - 1;
 
         var lines = new List<TableVisualLine>();
@@ -548,7 +589,20 @@ internal sealed class TableRowPresenter : UIElement
             // A truncated fragment is left-anchored (the … sits flush at the trailing edge); a fitting/wrapped one
             // honours the column's alignment. The … is a synthetic run — no caret stop — one cell past the prefix.
             int x = fragment.Ellipsis ? _metrics.ContentX(c) : _metrics.AlignedX(c, fragment.Width);
-            runs.Add(new Run(fragment.SrcStart, fragment.SrcLength, x, fragment.Width, RunKind.Text));
+
+            if (fragment.StyledRuns is { Count: > 0 } styled)
+            {
+                // A FORMATTED (marks-hidden) cell: one styled Text run per content run, each mapping to its
+                // block-relative source slice (== its display text, 1:1) and carrying its inline formatting.
+                foreach (var sr in styled)
+                    runs.Add(new Run(sr.SrcStart, sr.SrcLength, x + sr.CellOffset, sr.Width, RunKind.Text) { Style = ToRunStyle(sr.Style) });
+            }
+            else
+            {
+                // A RAW cell (plain, or the active cell the caret is in): draw the source slice verbatim.
+                runs.Add(new Run(fragment.SrcStart, fragment.SrcLength, x, fragment.Width, RunKind.Text));
+            }
+
             if (fragment.Ellipsis)
                 runs.Add(new Run(0, 0, x + fragment.Width, TableModel.EllipsisWidth, RunKind.Synthetic) { Glyph = TableBox.Ellipsis });
         }
