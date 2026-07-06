@@ -573,3 +573,14 @@ editor, filed only so the primitives can be tightened later):
    no editor-side wrapper was needed. Noting only as a theoretical robustness gap (a word run ending inside
    a cluster that mixes whitespace + combining marks would land off-boundary); keep the classifier
    whitespace-delimited (`TextBox` parity is the probe's pinned contract).
+
+### FB-1 consumer note (from the adoption review) — `TextLayout.Build` hard-breaks on lone control chars
+`Cursorial.Rendering.Text.TextLayout.Build` treats a lone `'\r'` (and `'\n'`) as a hard line break, even
+under `WrapMode.NoWrap` (which only disables *soft* wrap). A consumer whose line model keeps a lone `'\r'`
+as **in-line content** (CursorialEdit's does — a lone CR is not a terminator) must sanitize it before
+wrapping, or one source line splits into phantom visual rows with mismapped offsets. The editor does this
+in `DisplayText.SanitizeControls` (lone `'\r'` → control picture `␍`, a 1:1 substitution). Not a bug —
+standard text-layout behavior — but a sharp edge for editor-style consumers; a documented note on
+`TextLayout.Build`, or an opt-out for hard-break splitting, would save the next consumer the surprise.
+This class of divergence is exactly why the FB-1 probe (parity vs `TextBox`) can't be the sole net —
+a real `TextBox` splits on `'\r'` too, so it agreed with the bug.
