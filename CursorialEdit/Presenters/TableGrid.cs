@@ -25,6 +25,15 @@ internal static class TableBox
     public const string BottomTee = "┴";
     public const string BottomRight = "┘";
 
+    /// <summary>The truncation ellipsis <c>…</c> (U+2026, §5.6) — one cell at a truncated cell's trailing edge.</summary>
+    public const string Ellipsis = "…";
+
+    /// <summary>The left column-window overflow indicator <c>‹</c> — one cell at the window's left edge when columns are off-window left (§5.6, nice-to-have).</summary>
+    public const string WindowLeft = "‹";
+
+    /// <summary>The right column-window overflow indicator <c>›</c> — one cell at the window's right edge when columns are off-window right (§5.6, nice-to-have).</summary>
+    public const string WindowRight = "›";
+
     /// <summary>Cells of horizontal padding inside each cell box, on each side of the content (<c>│ content │</c>).</summary>
     public const int Padding = 1;
 }

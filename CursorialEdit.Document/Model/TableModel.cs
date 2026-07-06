@@ -311,20 +311,32 @@ public sealed class TableModel
     /// </summary>
     /// <exception cref="ArgumentNullException"><paramref name="columnWidths"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="row"/> is out of range.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="overflow"/> is not <see cref="TableOverflow.Wrap"/> (truncate / column-window are WP6).</exception>
     public TableRowLayout LayoutRow(int row, IReadOnlyList<int> columnWidths, TableOverflow overflow = TableOverflow.Wrap)
     {
         ArgumentNullException.ThrowIfNull(columnWidths);
         ArgumentOutOfRangeException.ThrowIfNegative(row);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(row, _rows.Length);
-        if (overflow != TableOverflow.Wrap)
-            throw new ArgumentOutOfRangeException(nameof(overflow), overflow, "WP1 implements Wrap only; truncate and column-window are M3.WP6.");
 
         var r = _rows[row];
         int columns = _columns.Length;
 
-        // Per column: the cell's content word-wrapped to its (viewport-resolved) width. The row's visual height
-        // is the max fragment count over its cells — the single place wrapped-cell → visual-row mapping is decided.
+        // Truncate (§5.6): each cell renders on ONE visual row clipped to its column with a trailing … — so a
+        // logical row is exactly one visual row (no wrap-growth). The single owner of cell → visual-row mapping
+        // stays here (risk a): this is the Truncate branch, Wrap below is unchanged.
+        if (overflow == TableOverflow.Truncate)
+        {
+            var cells = new CellFragment[columns];
+            for (var c = 0; c < columns; c++)
+            {
+                int w = c < columnWidths.Count ? columnWidths[c] : _columns[c].WidthCells;
+                cells[c] = TruncateCell(r.Cells[c], w);
+            }
+
+            return new TableRowLayout(row, r.IsHeader, r.SourceLine, [new TableVisualRow(cells)]);
+        }
+
+        // Wrap: per column, the cell's content word-wrapped to its (viewport-resolved) width. The row's visual
+        // height is the max fragment count over its cells — the place wrapped-cell → visual-row mapping is decided.
         var perColumn = new CellFragment[columns][];
         int visualRows = 1;
         for (var c = 0; c < columns; c++)
@@ -352,7 +364,6 @@ public sealed class TableModel
     /// <see cref="LayoutRow(int, IReadOnlyList{int}, TableOverflow)"/> overload with the resolved widths.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="row"/> is out of range.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="overflow"/> is not <see cref="TableOverflow.Wrap"/>.</exception>
     public TableRowLayout LayoutRow(int row, TableOverflow overflow = TableOverflow.Wrap)
     {
         var widths = new int[_columns.Length];
@@ -715,6 +726,40 @@ public sealed class TableModel
         return fragments.Count > 0 ? [.. fragments] : [new CellFragment(srcStart, text.Length, 0)];
     }
 
+    /// <summary>
+    /// Clips one cell's trimmed content to <paramref name="width"/> cells for <see cref="TableOverflow.Truncate"/>
+    /// (§5.6): the single visual-row fragment the cell occupies. A cell that fits is the whole content unchanged;
+    /// an over-wide cell keeps the longest grapheme-cluster <b>prefix</b> fitting <c>width − 1</c> cells (never
+    /// splitting a wide cluster) and sets <see cref="CellFragment.Ellipsis"/> so the presenter appends the one-cell
+    /// <c>…</c> — total drawn width ≤ <paramref name="width"/>. The prefix source range still tiles from the cell
+    /// start, so a caret in the visible prefix lands correctly.
+    /// </summary>
+    private CellFragment TruncateCell(CellSpan span, int width)
+    {
+        var (srcStart, text) = Content(span);
+        if (text.Length == 0)
+            return new CellFragment(srcStart, 0, 0);
+
+        int fullWidth = GraphemeWidth.StringWidth(text);
+        if (fullWidth <= width)
+            return new CellFragment(srcStart, text.Length, fullWidth); // fits — no clip, no ellipsis
+
+        // Reserve one cell for the … and keep the widest whole-cluster prefix that still fits the remainder.
+        int budget = Math.Max(0, width - EllipsisWidth);
+        int used = 0, len = 0;
+        var clusters = text.AsSpan().GetGraphemeEnumerator();
+        while (clusters.MoveNext())
+        {
+            int w = GraphemeWidth.StringWidth(clusters.Current);
+            if (used + w > budget)
+                break;
+            used += w;
+            len += clusters.Current.Length;
+        }
+
+        return new CellFragment(srcStart, len, used) { Ellipsis = true };
+    }
+
     private static ColumnAlignment MapAlignment(MdTableAlign? align) => align switch
     {
         MdTableAlign.Left => ColumnAlignment.Left,
@@ -728,6 +773,9 @@ public sealed class TableModel
 
     /// <summary>The maximum rendered column width in cells before content wraps (§5.1 [DECISION]).</summary>
     public const int MaxWidth = 40;
+
+    /// <summary>The display width in cells of the truncation ellipsis <c>…</c> (U+2026, a single cell) — reserved at the column's trailing edge under <see cref="TableOverflow.Truncate"/>.</summary>
+    public const int EllipsisWidth = 1;
 
     private readonly record struct Column(ColumnAlignment Alignment, int WidthCells, int MaxContentWidth, int CountAtMax);
 
@@ -750,11 +798,24 @@ public enum ColumnAlignment
     Right,
 }
 
-/// <summary>The cell-overflow mode the layout pass honours. WP1 implements <see cref="Wrap"/>; truncate and column-window arrive in M3.WP6.</summary>
+/// <summary>
+/// The cell-overflow mode the cell-layout pass (<see cref="TableModel.LayoutRow(int, IReadOnlyList{int}, TableOverflow)"/>)
+/// honours (§5.6). Both are per-cell layout modes; the automatic <b>column-window</b> horizontal scroll is
+/// orthogonal — a presenter-internal render offset applied in <i>either</i> mode when the grid can't fit even at
+/// <see cref="TableModel.MinWidth"/> (M3.WP6, FB-6 sidestep) — so it is <b>not</b> a value here.
+/// </summary>
 public enum TableOverflow
 {
     /// <summary>Content wider than the column wraps within the cell — the row grows taller (the v1 default, §5.6).</summary>
     Wrap = 0,
+
+    /// <summary>
+    /// Content wider than the column renders on <b>one</b> visual row, clipped to the column width with a
+    /// trailing <c>…</c> (U+2026, width 1) — the logical row is exactly one visual row (no wrap-growth, §5.6).
+    /// The focused cell reveals its full content (parallel to reveal-on-edit); non-focused cells stay truncated.
+    /// A configurable alternative to <see cref="Wrap"/> (the user-facing toggle lands with M5).
+    /// </summary>
+    Truncate,
 }
 
 /// <summary>
@@ -788,6 +849,15 @@ public readonly record struct CellFragment(int SrcStart, int SrcLength, int Widt
 
     /// <summary>Whether the fragment draws nothing.</summary>
     public bool IsEmpty => SrcLength <= 0;
+
+    /// <summary>
+    /// Whether a trailing <c>…</c> (U+2026) follows this fragment's text — set only by
+    /// <see cref="TableOverflow.Truncate"/> when the cell's content was clipped to the column width
+    /// (<see cref="SrcStart"/>/<see cref="SrcLength"/> then span the visible <b>prefix</b>, <see cref="Width"/>
+    /// its cell width, and the ellipsis draws in the one cell after it — total ≤ the column width). The
+    /// presenter draws the glyph; <see langword="false"/> for every wrapped/fitting fragment.
+    /// </summary>
+    public bool Ellipsis { get; init; }
 }
 
 /// <summary>One visual row of a logical row: exactly one <see cref="CellFragment"/> per column (absent columns are <see cref="CellFragment.Empty"/>).</summary>

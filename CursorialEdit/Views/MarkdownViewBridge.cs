@@ -77,6 +77,9 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     /// <summary>Whether the active prose line wraps in place while edited (reveal-wrap) vs. slides (Decision 9 revised). Default on.</summary>
     private bool _editWrapEnabled = true;
 
+    /// <summary>The table cell-overflow mode (§5.6) every realized table renders under. Default <see cref="TableOverflow.Wrap"/>.</summary>
+    private TableOverflow _overflowMode = TableOverflow.Wrap;
+
     /// <summary>
     /// Creates the bridge over <paramref name="producer"/>'s block list, reading source lines from
     /// <paramref name="buffer"/>, and subscribes to the producer's change feed.
@@ -146,6 +149,31 @@ public sealed class MarkdownViewBridge : IEditorViewSource
             // Re-establish the active block's reveal under the new policy: toggling to SLIDE must recompute the
             // horizontal slide (else the active line renders slid-to-0 with the caret possibly off-screen);
             // toggling to WRAP drops the slide. The height reflow + scroll-follow then flow through HeightsChanged.
+            RevealActive();
+        }
+    }
+
+    /// <summary>
+    /// The table cell-overflow mode (§5.6, M3.WP6): <see cref="TableOverflow.Wrap"/> (default) or
+    /// <see cref="TableOverflow.Truncate"/>. Settable, mirroring <see cref="EditWrapEnabled"/> — assigning it
+    /// re-lays-out every realized table (heights change) and re-reveals the caret's focused cell under the new
+    /// mode. The user-facing "table overflow" command lands with M5 (do not build it here).
+    /// </summary>
+    public TableOverflow OverflowMode
+    {
+        get => _overflowMode;
+        set
+        {
+            if (_overflowMode == value)
+                return;
+
+            _overflowMode = value;
+            foreach (var (_, presenter) in _presenters)
+                if (presenter is TablePresenter table)
+                    table.OverflowMode = value; // re-derives the table's rows + heights (MeasuredCallback refines the extent)
+
+            // Re-establish the focused-cell reveal / column-window under the new mode (Wrap has no focused-cell reveal;
+            // Truncate un-truncates the caret's cell). The height reflow flows through the re-measure.
             RevealActive();
         }
     }
@@ -299,7 +327,7 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         var model = TableModel.Build(block, source);
         return model is null
             ? new FallbackSourcePresenter(lines, block.Kind)
-            : new TablePresenter(lines, model, source, Math.Max(0, _wrapWidth)); // viewport-aware from the first frame
+            : new TablePresenter(lines, model, source, Math.Max(0, _wrapWidth), _overflowMode); // viewport-aware + current overflow mode from the first frame
     }
 
     /// <summary>A block's serialized source (lines + terminators) — the same string <c>LeafBlockPresenter.BlockText()</c> produces, so table cell spans index it.</summary>
@@ -348,7 +376,7 @@ public sealed class MarkdownViewBridge : IEditorViewSource
                 // viewport-unaware [3,40] fallback, so a cold-start off-band caret query (before the first
                 // OnViewportChanged, _wrapWidth still 0) resolves the SAME widths the presenter will, not an
                 // all-MinWidth grid from a negative budget — the caret lands in the right cell.
-                return TableCaretMap.Build(offBandModel, TableGridMetrics.BuildForViewport(offBandModel, Math.Max(0, _wrapWidth)), tableSource);
+                return TableCaretMap.Build(offBandModel, TableGridMetrics.BuildForViewport(offBandModel, Math.Max(0, _wrapWidth)), tableSource, _overflowMode);
         }
 
         return RunMapBuilder.Build(
@@ -380,12 +408,18 @@ public sealed class MarkdownViewBridge : IEditorViewSource
     public int ActiveSlide(int blockIndex, int row)
     {
         var id = Blocks[blockIndex].Id;
-        if (_activeBlockId != id || !_presenters.TryGetValue(id, out var presenter) || presenter.ActiveLine is null)
+        if (!_presenters.TryGetValue(id, out var presenter))
             return 0;
 
-        // A table never slides horizontally — it lays out in whole cells and its caret map reports published
-        // cells directly (M3.WP4). So the caret's cell is never offset by an active-line slide inside a table.
-        if (presenter is TablePresenter)
+        // A table never slides a line — but when it overflows the viewport it draws the whole grid through a
+        // presenter-internal COLUMN-WINDOW (M3.WP6, FB-6 sidestep). That offset applies to every row, and the
+        // caret publish subtracts it / a click adds it back here, so both stay consistent with the drawn grid —
+        // returned whenever the table overflows, even before it becomes the active block (a click into an
+        // off-window column needs it). A table that fits returns 0 (its map reports published cells directly).
+        if (presenter is TablePresenter table)
+            return table.WindowOffset;
+
+        if (_activeBlockId != id || presenter.ActiveLine is null)
             return 0;
 
         // Only the active LINE's row is slid; a hit-test on any other row of the same block gets no slide
@@ -430,7 +464,11 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         if (_activeBlockId is { } previous && previous != activeId)
         {
             if (_presenters.TryGetValue(previous, out var prior))
+            {
                 prior.SetReveal(null); // realized → re-measures to its inactive height (drops any wrap-reveal inflation)
+                if (prior is TablePresenter priorTable)
+                    priorTable.ClearActiveCell(); // re-truncate the cell we were editing (Truncate reveal-on-focus)
+            }
             else
                 // De-realized while active: its presenter is gone, so it can't re-measure — but its cached
                 // height may be the INFLATED wrap-reveal (revealed-marks) height. Drop it so the block
@@ -444,11 +482,13 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         if (!_presenters.TryGetValue(activeId, out var active))
             return; // active block is off the realized band — CreatePresenter reveals it when it realizes
 
-        // A table draws its own grid (no revealed source line, no slide): mark it active for the record but
-        // skip the run-map slide computation entirely — the caret map already lands the caret in the cell.
-        if (active is TablePresenter)
+        // A table draws its own grid (no revealed source line, no line slide): mark it active for the record, then
+        // follow the caret INSIDE the grid — reveal the focused cell (Truncate) and scroll the presenter-internal
+        // column-window so the caret's column is on-screen (M3.WP6). The caret map already lands the caret in the cell.
+        if (active is TablePresenter tablePresenter)
         {
             active.SetReveal(lineInBlock, 0);
+            tablePresenter.EnsureColumnVisible(BlockRelativeCaretOffset(caret, line, startLine));
             return;
         }
 

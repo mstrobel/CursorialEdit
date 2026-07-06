@@ -1,4 +1,5 @@
 using Cursorial.Rendering.Text;
+using Cursorial.Text;
 
 using CursorialEdit.Document.Model;
 using CursorialEdit.Layout;
@@ -57,8 +58,21 @@ internal sealed class TableCaretMap : ICaretMap
     /// <inheritdoc/>
     public int RowCount => _rows.Length;
 
-    /// <summary>Builds the caret map from a table <paramref name="model"/>, its shared grid <paramref name="metrics"/>, and its serialized <paramref name="source"/> (the cell-span origin).</summary>
-    public static TableCaretMap Build(TableModel model, TableGridMetrics metrics, string source)
+    /// <summary>
+    /// Builds the caret map from a table <paramref name="model"/>, its shared grid <paramref name="metrics"/>,
+    /// its serialized <paramref name="source"/> (the cell-span origin), and the cell-overflow
+    /// <paramref name="overflow"/> — so the map's grid height and per-cell stop geometry match what the
+    /// <see cref="TableRowPresenter"/> actually draws (Wrap = one row per wrapped visual row; Truncate = exactly
+    /// one row per logical row, each cell mapped at its NATURAL full-content geometry, matching both the truncated
+    /// prefix a non-focused cell draws and the un-truncated reveal a focused cell draws).
+    /// </summary>
+    /// <param name="activeCell">
+    /// The focused cell under <see cref="TableOverflow.Truncate"/> (its content is drawn in FULL, overflowing its
+    /// column), so its stop spans the whole reveal and a click on the revealed overflow round-trips and matches the
+    /// overdrawn pixels; every non-focused cell clamps its click-box to its drawn column. <see langword="null"/> (or
+    /// Wrap) = no full-reveal cell.
+    /// </param>
+    public static TableCaretMap Build(TableModel model, TableGridMetrics metrics, string source, TableOverflow overflow = TableOverflow.Wrap, (int Row, int Column)? activeCell = null)
     {
         var rows = new List<GridRow>();
         var flatSrc = new List<int>();
@@ -70,6 +84,42 @@ internal sealed class TableCaretMap : ICaretMap
         {
             if (r == 0)
                 rows.Add(new GridRow([])); // top border
+
+            if (overflow == TableOverflow.Truncate)
+            {
+                // One content grid row per logical row; each cell mapped at full natural geometry (the drawn prefix
+                // and the focused-cell reveal both sit at these columns, so caret/click land consistently).
+                var stops = new List<Stop>(columns);
+                for (var c = 0; c < columns; c++)
+                {
+                    if (model.IsCellEmpty(r, c))
+                    {
+                        var (anchor, _) = model.CellContentRange(r, c);
+                        stops.Add(new Stop(metrics.AlignedX(c, 0), 0, anchor, 0, Empty: true));
+                        continue;
+                    }
+
+                    var (start, end) = model.CellContentRange(r, c);
+                    int colWidth = metrics.ColumnWidth(c);
+                    int fullWidth = GraphemeWidth.StringWidth(model.CellContent(r, c));
+                    bool fits = fullWidth <= colWidth;
+                    // A cell that fits honours alignment; an over-wide (truncated/revealed) cell is left-anchored.
+                    int cellX = fits ? metrics.AlignedX(c, fullWidth) : metrics.ContentX(c);
+                    // The stop's WIDTH is the click-box, so it must match the DRAWN extent. A non-focused over-wide
+                    // cell draws only its clipped prefix, so its box clamps to the column — else it would swallow
+                    // clicks aimed at the visible cells drawn to its right. The FOCUSED cell draws in full (the
+                    // reveal overflows and overdraws its right neighbours), so its box spans the full content — a
+                    // click on the revealed overflow lands back in it, matching the overdrawn pixels. SrcLen stays
+                    // FULL either way, so Locate/OffsetAt map the whole content (the reveal's natural columns).
+                    bool isFocused = activeCell is { } a && a.Row == r && a.Column == c;
+                    int drawnWidth = fits || isFocused ? fullWidth : colWidth;
+                    stops.Add(new Stop(cellX, drawnWidth, start, end - start, Empty: false));
+                }
+
+                AddContentRow(rows, flatSrc, flatRow, flatStops, stops);
+                rows.Add(new GridRow([])); // separator / bottom border
+                continue;
+            }
 
             var layout = model.LayoutRow(r, metrics.ColumnWidths);
             for (var v = 0; v < layout.VisualRowCount; v++)
@@ -96,16 +146,7 @@ internal sealed class TableCaretMap : ICaretMap
                     stops.Add(new Stop(metrics.AlignedX(c, fragment.Width), fragment.Width, fragment.SrcStart, fragment.SrcLength, Empty: false));
                 }
 
-                stops.Sort(static (a, b) => a.Cell - b.Cell);
-                int gridRow = rows.Count;
-                foreach (var stop in stops)
-                {
-                    flatSrc.Add(stop.SrcStart);
-                    flatRow.Add(gridRow);
-                    flatStops.Add(stop);
-                }
-
-                rows.Add(new GridRow([.. stops]));
+                AddContentRow(rows, flatSrc, flatRow, flatStops, stops);
             }
 
             rows.Add(new GridRow([])); // separator between rows, or the bottom border after the last
@@ -126,6 +167,21 @@ internal sealed class TableCaretMap : ICaretMap
         }
 
         return new TableCaretMap(source, [.. rows], stopSrc, stopRow, stops2);
+    }
+
+    /// <summary>Sorts one visual row's <paramref name="stops"/> by cell, appends them to the flat Locate index at the next grid row, and records the <see cref="GridRow"/>.</summary>
+    private static void AddContentRow(List<GridRow> rows, List<int> flatSrc, List<int> flatRow, List<Stop> flatStops, List<Stop> stops)
+    {
+        stops.Sort(static (a, b) => a.Cell - b.Cell);
+        int gridRow = rows.Count;
+        foreach (var stop in stops)
+        {
+            flatSrc.Add(stop.SrcStart);
+            flatRow.Add(gridRow);
+            flatStops.Add(stop);
+        }
+
+        rows.Add(new GridRow([.. stops]));
     }
 
     /// <inheritdoc/>

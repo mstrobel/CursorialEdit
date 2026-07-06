@@ -33,9 +33,21 @@ internal sealed class TableRowPresenter : UIElement
     private TableGridMetrics _metrics;
     private string _blockText;
     private readonly int _logicalRow;
+    private TableOverflow _overflow;
+
+    /// <summary>The column of the focused cell when the caret is on THIS row (its content reveals full, un-truncated, under <see cref="TableOverflow.Truncate"/>); <c>-1</c> when no cell on this row is focused.</summary>
+    private int _activeColumn = -1;
 
     private TableVisualLine[] _lines;
     private string _signature;
+
+    /// <summary>
+    /// The presenter-internal <b>column-window</b> the whole grid is drawn through (M3.WP6, FB-6 sidestep):
+    /// <c>Offset</c> is the cells clipped off the left (the first-visible column's <see cref="TableGridMetrics.BorderX"/>),
+    /// <c>DrawWidth</c> the visible grid width (≤ viewport). The owning <see cref="TablePresenter"/> supplies it so
+    /// every row translates by the same offset; <see langword="null"/> (or a non-positive width) = draw the whole grid.
+    /// </summary>
+    internal Func<(int Offset, int DrawWidth)>? WindowProvider { get; set; }
 
     /// <summary>
     /// The document selection range this row highlights (M3.WP4-deferred #2): a delegate the owning
@@ -46,12 +58,13 @@ internal sealed class TableRowPresenter : UIElement
     /// </summary>
     internal Func<(int Start, int End)?>? SelectionProvider { get; set; }
 
-    public TableRowPresenter(TableModel model, TableGridMetrics metrics, string blockText, int logicalRow)
+    public TableRowPresenter(TableModel model, TableGridMetrics metrics, string blockText, int logicalRow, TableOverflow overflow = TableOverflow.Wrap)
     {
         _model = model;
         _metrics = metrics;
         _blockText = blockText;
         _logicalRow = logicalRow;
+        _overflow = overflow;
         IsRenderBoundary = true; // Decision 7 — a cell edit re-rasters one row zone
 
         _lines = BuildLines(out _signature);
@@ -59,6 +72,30 @@ internal sealed class TableRowPresenter : UIElement
 
     /// <summary>The row's rendered height in cells (visual rows + owned borders) — the height the table stacks with.</summary>
     public int RowHeight => _lines.Length;
+
+    /// <summary>
+    /// The focused-cell column when the caret is on this row (<see cref="TableOverflow.Truncate"/> reveals it in
+    /// full), or <c>-1</c>. Set by the owning <see cref="TablePresenter"/> on reveal; a change re-rasters this one
+    /// row zone (no re-derive — the reveal is a draw-time overlay, not a layout change).
+    /// </summary>
+    internal int ActiveColumn
+    {
+        get => _activeColumn;
+        set
+        {
+            if (_activeColumn == value)
+                return;
+            _activeColumn = value;
+            InvalidateVisual();
+        }
+    }
+
+    /// <summary>The cell-overflow mode this row lays out under (<see cref="TablePresenter.OverflowMode"/>); the owner sets it before <see cref="Refresh"/> so a mode toggle re-derives the row.</summary>
+    internal TableOverflow Overflow
+    {
+        get => _overflow;
+        set => _overflow = value;
+    }
 
     /// <summary>Number of <see cref="Render"/> calls — the per-row raster observable the R3 benchmark diffs against.</summary>
     public int RenderCount { get; private set; }
@@ -142,20 +179,34 @@ internal sealed class TableRowPresenter : UIElement
         var headerStyle = CellStyle.Default.WithAttributes(TextAttributes.Bold);
         var selection = ResolveSelection(context);
 
+        // The column-window (M3.WP6): the whole grid draws translated left by `offset` cells and clipped to
+        // `drawWidth` (≤ viewport). Non-overflowing tables get (0, gridWidth) — the pre-WP6 behaviour verbatim.
+        var (offset, drawWidth) = ResolveWindow();
+
         for (var row = 0; row < _lines.Length; row++)
         {
             var line = _lines[row];
 
-            if (line is { Kind: TableLineKind.Content, IsHeader: true } && _metrics.Width > 0)
-                context.FillRectangle(new Rect(0, row, _metrics.Width, 1), headerFill); // header fill under the glyphs
+            if (line is { Kind: TableLineKind.Content, IsHeader: true } && drawWidth > 0)
+                context.FillRectangle(new Rect(0, row, drawWidth, 1), headerFill); // header fill under the glyphs
 
             foreach (var run in line.Runs)
             {
+                // Translate into the window; a run whose first cell is off-window is not drawn (the window is
+                // column-granular, so a drawn column sits wholly inside [0, drawWidth) — no half-cell clip).
+                int col = run.Col - offset;
+                if (col < 0 || col >= drawWidth)
+                    continue;
+
                 if (run.Kind == RunKind.Synthetic)
                 {
-                    // Border/divider glyphs (│ ┼ ─ …) are structure, never selectable content — draw plain.
                     if (run.Glyph is { Length: > 0 } glyph)
-                        context.DrawText(run.Col, row, glyph, borderBrush, null, CellStyle.Default);
+                    {
+                        // The truncation … rides the content colour; box-drawing glyphs (│ ┼ ─ …) are structure.
+                        var brush = string.Equals(glyph, TableBox.Ellipsis, StringComparison.Ordinal) ? foreground : borderBrush;
+                        context.DrawText(col, row, glyph, brush, null, CellStyle.Default);
+                    }
+
                     continue;
                 }
 
@@ -167,9 +218,66 @@ internal sealed class TableRowPresenter : UIElement
                     continue;
 
                 var style = line.IsHeader ? headerStyle : CellStyle.Default;
-                DrawCellText(context, run.Col, row, slice, run.SrcStart, foreground, style, selection);
+                DrawCellText(context, col, row, slice, run.SrcStart, foreground, style, selection);
             }
+
+            // Truncate reveal-on-focus (§5.6): the focused cell re-draws its FULL content on top of the truncated
+            // base, overflowing into the cells to its right on this content row (spreadsheet-style) but clipped
+            // before the grid's right border. Non-focused cells stay truncated; a caret move re-rasters this zone.
+            if (_overflow == TableOverflow.Truncate && _activeColumn >= 0 && line.Kind == TableLineKind.Content)
+                DrawActiveReveal(context, row, offset, drawWidth, line.IsHeader ? headerStyle : CellStyle.Default, foreground, selection);
         }
+    }
+
+    /// <summary>The window (<c>Offset</c>, <c>DrawWidth</c>) this row draws through, or the whole grid when no column-window is active.</summary>
+    private (int Offset, int DrawWidth) ResolveWindow()
+    {
+        if (WindowProvider?.Invoke() is { DrawWidth: > 0 } window)
+            return window;
+        return (0, _metrics.Width);
+    }
+
+    /// <summary>
+    /// Draws the focused cell's full content (un-truncated) at its natural column, translated into the window and
+    /// clipped just short of the grid's right border so the outer box survives. The caret map reports this same
+    /// natural geometry, so the caret lands on the revealed grapheme; the selection composes in as everywhere else.
+    /// </summary>
+    private void DrawActiveReveal(RenderContext context, int drawRow, int offset, int drawWidth, CellStyle style, IBrush foreground, in CellSelection selection)
+    {
+        var (start, end) = _model.CellContentRange(_logicalRow, _activeColumn);
+        if (end <= start)
+            return; // an empty focused cell has nothing to reveal
+
+        var content = Slice(start, end - start);
+        if (content.IsEmpty)
+            return;
+
+        // A cell that already fits its column was drawn IN FULL (and aligned) by the base pass — nothing to
+        // reveal, and re-drawing it left-anchored would shove a right/center-aligned cell out of place. Only an
+        // over-wide (truncated) cell reveals, and it is left-anchored (matching the truncated prefix + the map).
+        if (GraphemeWidth.StringWidth(content) <= _metrics.ColumnWidth(_activeColumn))
+            return;
+
+        int startCol = _metrics.ContentX(_activeColumn) - offset;
+        // Clip strictly left of the grid's right border cell AND the window edge — whichever is nearer.
+        int rightLimit = Math.Min(drawWidth, _metrics.BorderX(_metrics.ColumnCount) - offset);
+        if (startCol < 0 || startCol >= rightLimit)
+            return;
+
+        // Keep the whole-cluster prefix that fits [startCol, rightLimit) — never a half wide cluster over the edge.
+        int drawnAt = startCol, visLen = 0;
+        var clusters = content.GetGraphemeEnumerator();
+        while (clusters.MoveNext())
+        {
+            int w = GraphemeWidth.StringWidth(clusters.Current);
+            if (drawnAt + w > rightLimit)
+                break;
+            drawnAt += w;
+            visLen += clusters.Current.Length;
+        }
+
+        if (visLen > 0)
+            DrawCellText(context, startCol, drawRow, content[..visLen], start, foreground, style, selection);
     }
 
     // ───────────────────────────── selection highlight (WP4-deferred #2) ─────────────────────────────
@@ -261,7 +369,7 @@ internal sealed class TableRowPresenter : UIElement
 
     private TableVisualLine[] BuildLines(out string signature)
     {
-        var layout = _model.LayoutRow(_logicalRow, _metrics.ColumnWidths);
+        var layout = _model.LayoutRow(_logicalRow, _metrics.ColumnWidths, _overflow);
         bool isLast = _logicalRow == _model.RowCount - 1;
 
         var lines = new List<TableVisualLine>();
@@ -313,8 +421,12 @@ internal sealed class TableRowPresenter : UIElement
             if (fragment.IsEmpty)
                 continue;
 
-            int x = _metrics.AlignedX(c, fragment.Width);
+            // A truncated fragment is left-anchored (the … sits flush at the trailing edge); a fitting/wrapped one
+            // honours the column's alignment. The … is a synthetic run — no caret stop — one cell past the prefix.
+            int x = fragment.Ellipsis ? _metrics.ContentX(c) : _metrics.AlignedX(c, fragment.Width);
             runs.Add(new Run(fragment.SrcStart, fragment.SrcLength, x, fragment.Width, RunKind.Text));
+            if (fragment.Ellipsis)
+                runs.Add(new Run(0, 0, x + fragment.Width, TableModel.EllipsisWidth, RunKind.Synthetic) { Glyph = TableBox.Ellipsis });
         }
 
         runs.Sort(static (l, r) => l.Col - r.Col);
