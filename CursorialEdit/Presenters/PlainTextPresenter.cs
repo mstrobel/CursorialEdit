@@ -118,7 +118,7 @@ public sealed class PlainTextPresenter : UIElement
     /// <summary>Draws one row split around its selected slice <c>[from, to)</c> (row-text-relative cluster boundaries).</summary>
     private void DrawSelectedRow(RenderContext context, int row, ReadOnlySpan<char> text, int from, int to, IBrush foreground)
     {
-        var glyphs = GraphemeLayout.Build(text.ToString());
+        var glyphs = GraphemeLayout.Build(text);
         int fromCell = glyphs.ColumnOf(from);
         int toCell = glyphs.ColumnOf(to);
 

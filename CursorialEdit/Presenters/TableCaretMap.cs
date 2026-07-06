@@ -338,7 +338,7 @@ internal sealed class TableCaretMap : ICaretMap
         if (within <= 0 || stop.SrcLen <= 0)
             return 0;
         var slice = _source.AsSpan(stop.SrcStart, Math.Min(stop.SrcLen, _source.Length - stop.SrcStart));
-        return GraphemeLayout.Build(slice.ToString()).ColumnOf(Math.Min(within, slice.Length));
+        return GraphemeLayout.Build(slice).ColumnOf(Math.Min(within, slice.Length));
     }
 
     private int ColAtOrBefore(Stop stop, int goalCell)
@@ -346,6 +346,6 @@ internal sealed class TableCaretMap : ICaretMap
         if (stop.SrcLen <= 0)
             return 0;
         var slice = _source.AsSpan(stop.SrcStart, Math.Min(stop.SrcLen, _source.Length - stop.SrcStart));
-        return GraphemeLayout.Build(slice.ToString()).CharIndexAtOrBeforeColumn(goalCell);
+        return GraphemeLayout.Build(slice).CharIndexAtOrBeforeColumn(goalCell);
     }
 }
