@@ -102,6 +102,9 @@ public sealed class BlockViewBridge : IEditorViewSource, IBlockRunMapSource, ISe
     public int ActiveSlide(int blockIndex, int row) => 0;
 
     /// <inheritdoc/>
+    public int VisibleWidth(int blockIndex) => Math.Max(1, _wrapWidth); // plain text: no table window; the viewport is the bound
+
+    /// <inheritdoc/>
     /// <remarks>No reveal on the plain surface — a caret move touches no presenter's mark state.</remarks>
     public void OnCaretPositioned(TextPosition caret) { }
 

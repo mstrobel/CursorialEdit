@@ -78,6 +78,7 @@ public sealed class TablePresenter : LeafBlockPresenter
         _measuredColumns = availableColumns;
         _overflow = overflow;
         _metrics = TableGridMetrics.BuildForViewport(model, availableColumns);
+        RecomputeWindow(); // seed the cached window before the rows (their WindowProvider reads it)
         BuildChildren();
     }
 
@@ -116,17 +117,25 @@ public sealed class TablePresenter : LeafBlockPresenter
     }
 
     /// <summary>
-    /// The column-window cell offset the whole grid is drawn through (0 when the table fits) — the value the bridge
-    /// returns from <c>ActiveSlide</c> so the caret publishes and clicks resolve through the same offset. The caret
-    /// map itself stays in unclipped grid cells, so it needs no rebuild when the window scrolls.
+    /// The column-window (offset, on-screen width) the whole grid is drawn through — the <b>single source</b> the
+    /// caret path (bridge <c>ActiveSlide</c> = <see cref="WindowOffset"/>) and the row render (<see cref="Window"/>)
+    /// both read, so they are provably identical (a divergence would land the caret off the drawn text). Recomputed
+    /// only when the geometry inputs (<c>_metrics</c>, <c>_measuredColumns</c>, <c>_windowColumn</c>) change, via
+    /// <see cref="RecomputeWindow"/> — not re-scanned per row render.
     /// </summary>
-    public int WindowOffset => WindowActive ? _metrics.BorderX(ClampColumn(_windowColumn)) : 0;
+    private (int Offset, int DrawWidth) _window;
 
-    /// <summary>The grid's on-screen width in cells — the full grid width when it fits, else the column-window's visible sub-grid width (≤ viewport). The FB-6 "grid width ≤ viewport" observable.</summary>
-    internal int RenderedWidth => WindowActive ? WindowDrawWidth : _metrics.Width;
+    /// <summary>The column-window cell offset (0 when the table fits) — the value the bridge returns from <c>ActiveSlide</c>, so the caret publish subtracts it and a click adds it back through the same offset the rows draw with.</summary>
+    public int WindowOffset => _window.Offset;
+
+    /// <summary>The grid's on-screen width in cells — the full grid width when it fits, else the column-window's visible sub-grid width (≤ viewport). The FB-6 "grid width ≤ viewport" observable, and the caret-publish clip bound.</summary>
+    internal int RenderedWidth => _window.DrawWidth;
 
     /// <summary>The first visible column index of the active column-window (0 when the table fits) — test observability.</summary>
     internal int WindowColumn => WindowActive ? ClampColumn(_windowColumn) : 0;
+
+    /// <summary>The (offset, on-screen width) each row draws through — the cached single source shared with the caret path.</summary>
+    private (int Offset, int DrawWidth) Window() => _window;
 
     /// <summary>Whether the grid overflows the viewport even at MinWidth widths, so the column-window is engaged (§5.6).</summary>
     private bool WindowActive => _measuredColumns > 0 && _metrics.Width > _measuredColumns;
@@ -154,21 +163,20 @@ public sealed class TablePresenter : LeafBlockPresenter
         return last;
     }
 
-    /// <summary>The visible sub-grid width (cells) of the active column-window, clamped to the viewport.</summary>
-    private int WindowDrawWidth
+    /// <summary>Recomputes the cached <see cref="_window"/> from the current geometry — called whenever <c>_metrics</c>, <c>_measuredColumns</c>, or <c>_windowColumn</c> moves.</summary>
+    private void RecomputeWindow()
     {
-        get
+        if (!WindowActive)
         {
-            int first = ClampColumn(_windowColumn);
-            int last = LastVisibleColumn(first);
-            int width = _metrics.BorderX(last) - _metrics.BorderX(first) + 1;
-            return Math.Min(width, _measuredColumns);
+            _window = (0, _metrics.Width);
+            return;
         }
-    }
 
-    /// <summary>The (offset, drawWidth) each row draws through — the whole grid when it fits, else the active column-window.</summary>
-    private (int Offset, int DrawWidth) Window() =>
-        WindowActive ? (_metrics.BorderX(ClampColumn(_windowColumn)), WindowDrawWidth) : (0, _metrics.Width);
+        int first = ClampColumn(_windowColumn);
+        int offset = _metrics.BorderX(first);
+        int width = Math.Min(_metrics.BorderX(LastVisibleColumn(first)) - offset + 1, _measuredColumns);
+        _window = (offset, width);
+    }
 
     /// <summary>
     /// The composite caret map for this table (M3.WP4): maps a block-relative source offset to the grid
@@ -178,21 +186,31 @@ public sealed class TablePresenter : LeafBlockPresenter
     public ICaretMap CaretMap() => _caretMap ??= TableCaretMap.Build(_model, _metrics, _source, _overflow, _activeCell);
 
     /// <summary>
-    /// Follows the caret (M3.WP6): un-truncates the focused cell (Truncate) and, when the grid overflows the
-    /// viewport, scrolls the presenter-internal column-window so the caret's column is on-screen. Called by the
-    /// bridge on every caret move inside the table. The caret map is window-independent, so it is not rebuilt.
+    /// Follows the caret (M3.WP6): records the focused cell (un-truncating it under Truncate) and, when the grid
+    /// overflows the viewport, scrolls the presenter-internal column-window so the caret's column is on-screen.
+    /// Called by the bridge on every caret move inside the table. The caret map is window-independent (unclipped
+    /// grid cells), so the window scroll does not rebuild it.
     /// </summary>
     /// <param name="blockRelOffset">The caret's block-relative source offset (locates its cell via the model).</param>
     public void EnsureColumnVisible(int blockRelOffset)
     {
         var cell = _model.CellOfOffset(blockRelOffset);
         SetActiveCell(cell);
+        ScrollColumnIntoView(cell?.Column);
+    }
 
-        if (!WindowActive || cell is not { } focus)
+    /// <summary>
+    /// Scrolls the column-window the minimum needed so <paramref name="column"/> is on-screen (a no-op when the
+    /// table fits or the caret is not in the table). Also the resize re-follow (<see cref="ApplyViewportWidths"/>),
+    /// so a viewport change that no longer contains the caret re-syncs before the caret re-publishes.
+    /// </summary>
+    private void ScrollColumnIntoView(int? column)
+    {
+        if (!WindowActive || column is not { } target0)
             return;
 
         int first = ClampColumn(_windowColumn);
-        int target = ClampColumn(focus.Column);
+        int target = ClampColumn(target0);
         if (target < first)
         {
             first = target; // scroll left: the focused column becomes the first visible
@@ -207,39 +225,58 @@ public sealed class TablePresenter : LeafBlockPresenter
             return;
 
         _windowColumn = first;
-        // The whole grid shifted (a geometry change bounded to the table): re-measure so the rows re-arrange at the
-        // new on-screen width — a window whose fitted draw width differs must not clip the freshly-revealed columns
-        // into the old bounds — and re-raster them at the new offset. The document is untouched (separate boundaries).
+        RecomputeWindow();
+        // The whole grid shifted (a geometry change bounded to the table). A window scroll never changes a row's
+        // DESIRED size (it is _metrics.Width × rows regardless), so re-ARRANGE (rows re-land at the new on-screen
+        // width) and re-raster (the new offset) — no re-measure. The document is untouched (separate boundaries).
+        InvalidateArrange();
         foreach (var row in _rows)
-        {
-            row.InvalidateMeasure();
             row.InvalidateVisual();
-        }
     }
 
-    /// <summary>Clears the focused-cell reveal when the caret leaves the table (the bridge calls this as it deactivates the block).</summary>
-    public void ClearActiveCell() => SetActiveCell(null);
-
-    /// <summary>Moves the Truncate focused-cell reveal to <paramref name="cell"/> (a no-op in Wrap mode): the old row re-truncates, the new row un-truncates its focused cell.</summary>
-    private void SetActiveCell((int Row, int Column)? cell)
+    /// <summary>
+    /// Clears the caret's cell when it leaves the table (the bridge calls this as it deactivates the block): drops
+    /// the focused-cell reveal AND resets the column-window to the left, so an inactive wide table is not left
+    /// frozen scrolled-right with its leading columns unreachable (its width stays pinned to the viewport).
+    /// </summary>
+    public void ClearActiveCell()
     {
-        var target = _overflow == TableOverflow.Truncate ? cell : null;
-        if (_activeCell == target)
+        SetActiveCell(null);
+
+        if (_windowColumn == 0)
             return;
 
-        if (_activeCell is { } prev && prev.Row < _rows.Count)
-            _rows[prev.Row].ActiveColumn = -1;
+        _windowColumn = 0;
+        RecomputeWindow();
+        InvalidateArrange();
+        foreach (var row in _rows)
+            row.InvalidateVisual();
+    }
 
-        _activeCell = target;
+    /// <summary>
+    /// Records the caret's cell (<see cref="_activeCell"/>, tracked in BOTH modes so a resize can re-follow the
+    /// window to it) and, under Truncate, moves the focused-cell reveal there (the old row re-truncates, the new
+    /// row un-truncates) and drops the focus-dependent caret map. In Wrap mode only the tracking runs.
+    /// </summary>
+    private void SetActiveCell((int Row, int Column)? cell)
+    {
+        if (_activeCell == cell)
+            return;
 
-        if (target is { } now && now.Row < _rows.Count)
-            _rows[now.Row].ActiveColumn = now.Column;
-
-        // The Truncate caret map's focused-cell stop spans the full reveal (so a click on the revealed overflow
-        // round-trips and matches the overdrawn pixels) while non-focused cells clamp — so the map depends on the
-        // focused cell. Drop it so the next query rebuilds. (Wrap's map is focus-independent; target is null there.)
         if (_overflow == TableOverflow.Truncate)
+        {
+            if (_activeCell is { } prev && prev.Row < _rows.Count)
+                _rows[prev.Row].ActiveColumn = -1;
+            if (cell is { } now && now.Row < _rows.Count)
+                _rows[now.Row].ActiveColumn = now.Column;
+
+            // The Truncate caret map's focused-cell stop spans the full reveal (so a click on the revealed overflow
+            // round-trips and matches the overdrawn pixels) while non-focused cells clamp — so the map depends on
+            // the focused cell. Drop it so the next query rebuilds. (Wrap's map is focus-independent.)
             _caretMap = null;
+        }
+
+        _activeCell = cell;
     }
 
     /// <summary>The per-logical-row child presenters (test observability — the committed per-row render boundaries).</summary>
@@ -282,6 +319,7 @@ public sealed class TablePresenter : LeafBlockPresenter
         _metrics = TableGridMetrics.BuildForViewport(model, _measuredColumns);
         _caretMap = null; // the geometry/source moved — the next caret query rebuilds the map
         _windowColumn = WindowActive ? ClampColumn(_windowColumn) : 0; // keep the window valid / reset when it now fits
+        RecomputeWindow(); // a content edit can change the grid width → start/stop or re-anchor the window
 
         // A row-count / column-count change re-forms the child set; otherwise reconcile in place and
         // touch only what actually moved.
@@ -399,19 +437,35 @@ public sealed class TablePresenter : LeafBlockPresenter
     /// </summary>
     private void ApplyViewportWidths()
     {
+        var oldWindow = _window;
         var newMetrics = TableGridMetrics.BuildForViewport(_model, _measuredColumns);
-        if (newMetrics.Equals(_metrics))
-            return; // the viewport change did not move any column — nothing to re-lay-out
-
-        _metrics = newMetrics;
-        _caretMap = null; // the divider band moved — the next caret query rebuilds the map on the new geometry
-        _windowColumn = WindowActive ? ClampColumn(_windowColumn) : 0; // a resize can start/stop the column-window
-
-        foreach (var row in _rows)
+        bool metricsMoved = !newMetrics.Equals(_metrics);
+        if (metricsMoved)
         {
-            row.Refresh(_model, _metrics, _source);
-            row.InvalidateMeasure();
-            row.InvalidateVisual();
+            _metrics = newMetrics;
+            _caretMap = null; // the divider band moved — the next caret query rebuilds the map on the new geometry
+            foreach (var row in _rows)
+                row.Refresh(_model, _metrics, _source);
+        }
+
+        // The viewport width itself changed (that is why we are here), so the window's active-ness and draw width
+        // can move even when the resolved column widths did not — re-anchor and recompute, then re-follow the
+        // caret so a resize that no longer contains it re-syncs BEFORE the caret re-publishes (#4).
+        _windowColumn = WindowActive ? ClampColumn(_windowColumn) : 0;
+        RecomputeWindow();
+        ScrollColumnIntoView(_activeCell?.Column);
+
+        // Re-arrange/re-raster the rows when the grid geometry OR the window moved (a pure window move does not
+        // change a row's desired size, so it re-arranges without re-measuring). Bounded to the table.
+        if (metricsMoved || _window != oldWindow)
+        {
+            InvalidateArrange();
+            foreach (var row in _rows)
+            {
+                if (metricsMoved)
+                    row.InvalidateMeasure();
+                row.InvalidateVisual();
+            }
         }
     }
 
@@ -525,6 +579,7 @@ public sealed class TablePresenter : LeafBlockPresenter
         _highlightedRows.Clear(); // row indices are about to change — drop the stale highlight set
         _windowColumn = 0;        // column/row counts changed — reset the window (re-followed on the next caret move)
         _activeCell = null;
+        RecomputeWindow();        // the reset window feeds the freshly built rows' WindowProvider
 
         BuildChildren();
         RetrackHighlightedRows(); // re-sync the set to the fresh rows' highlight, so a later clear re-rasters them

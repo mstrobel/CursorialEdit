@@ -397,4 +397,96 @@ public class TableOverflowTests
         Assert.True(table.GridWidth > 40, "overflows at MinWidth");
         Assert.True(table.RenderedWidth <= 40, "the window fits the viewport under Truncate too");
     }
+
+    // ───────────────────────────── 6. WindowOffset ↔ caret integration (independent review) ─────────────────────────────
+
+    [Fact]
+    public void ColumnWindow_VerticalOutOfAWindowedTable_UsesTheVisibleGoalColumn() // review #1
+    {
+        // Table (16 cols, windowed at 40) with a wide paragraph below. Tab to a right column so the window scrolls;
+        // the caret's VISIBLE column is far left of its unclipped grid cell. Down out of the table must land at the
+        // VISIBLE column in the paragraph, not the unclipped ~50.
+        using var h = MarkdownEditingHarness.Create(ManyColumns(16) + "\n" + new string('z', 60) + "\n", columns: 40, rows: 16);
+        var table = Table(h);
+
+        h.Click(2, 1); // header cell 'a'
+        for (var i = 0; i < 8; i++)
+            h.Key(Key.Tab); // reach header column 8 — the window scrolls right to show it
+        Assert.True(table.WindowColumn > 0, "the window scrolled to reveal column 8");
+
+        int visibleColumn = h.Caret.VisualDocumentPosition().Cell; // the on-screen column (< the unclipped grid cell)
+        Assert.True(visibleColumn < table.RenderedWidth);
+
+        h.Key(Key.DownArrow); // header col 8 → body col 8 (goal captured as the VISIBLE column)
+        h.Key(Key.DownArrow); // body col 8 → the paragraph below the table
+        int paragraphLine = h.Caret.Position.Line;
+        Assert.Equal('z', Line(h, paragraphLine)[0]); // landed in the paragraph
+
+        // The paragraph has no window/slide, so its source column == the visible goal — NOT the unclipped ~50.
+        Assert.Equal(visibleColumn, h.Caret.Position.Col);
+    }
+
+    [Fact]
+    public void ColumnWindow_LeavingTheTable_ResetsTheWindowToTheLeft() // review #2
+    {
+        using var h = MarkdownEditingHarness.Create(ManyColumns(16) + "\noutro\n", columns: 40, rows: 16);
+        var table = Table(h);
+
+        h.Click(2, 1);
+        for (var i = 0; i < 12; i++)
+            h.Key(Key.Tab); // scroll the window well to the right
+        Assert.True(table.WindowColumn > 0, "the window scrolled right");
+        Assert.DoesNotContain("a", h.RowTrimmed(1)); // column 0 ('a') is off-window left
+
+        // Click out of the table (into the outro paragraph). The window must reset so the leftmost columns —
+        // including the header start — are reachable again on an inactive wide table.
+        int outroFrameRow = table.MeasuredHeight(40); // the paragraph sits just below the grid
+        h.Click(0, outroFrameRow);
+        Assert.Equal(0, table.WindowColumn);
+        Assert.Contains("a", h.RowTrimmed(1)); // the grid redraws from column 0
+    }
+
+    [Fact]
+    public void Truncate_CaretDeepInAFocusedOverWideCell_PublishesWithinTheClip() // review #3
+    {
+        // A single wide column at a narrow viewport: Truncate clips it to ~16 cells. Focusing it and moving to its
+        // END puts the caret's unclipped map cell far past the viewport; the published visible column must be
+        // clamped to the drawn width so the caret stays on-screen.
+        using var h = MarkdownEditingHarness.Create(
+            "| " + new string('a', 60) + " |\n|---|\n| x |\n", columns: 20, rows: 12);
+        h.Bridge.OverflowMode = TableOverflow.Truncate;
+        h.Settle();
+        var table = Table(h);
+        Assert.True(table.RenderedWidth <= 20);
+
+        h.Click(2, 1);        // focus the header cell (its content start)
+        h.Key(Key.End);       // move to the end of its 60-char content (unclipped cell ~62)
+
+        int published = h.Caret.VisualDocumentPosition().Cell;
+        Assert.True(published <= table.RenderedWidth, $"published column {published} must stay within the drawn width {table.RenderedWidth}");
+        Assert.True(published <= 20, "and within the viewport");
+    }
+
+    [Fact]
+    public void ColumnWindow_ResizeReSyncsTheWindowToTheCaret() // review #4
+    {
+        // 16 cols at viewport 80: columns 0..12 fit (windowed grid 97 > 80). Put the caret in column 12, then
+        // shrink to 40 where only ~6 columns fit — the window must re-follow so the caret stays on-screen.
+        using var h = MarkdownEditingHarness.Create(ManyColumns(16), columns: 80, rows: 12);
+        var table = Table(h);
+        Assert.True(table.GridWidth > 80, "windowed at 80");
+
+        h.Click(2, 1);
+        for (var i = 0; i < 12; i++)
+            h.Key(Key.Tab); // reach column 12 ('m'), visible at width 80
+        Assert.Contains("m", h.RowTrimmed(1));
+
+        h.Host.SendResize(40, 12); // only ~6 columns now fit — the window must re-follow the caret
+        h.Settle();
+
+        Assert.True(table.RenderedWidth <= 40);
+        Assert.True(table.WindowColumn > 0, "the window re-followed the caret after the resize");
+        Assert.Contains("m", h.RowTrimmed(1)); // column 12 is still on-screen
+        Assert.True(h.Caret.VisualDocumentPosition().Cell <= table.RenderedWidth, "the caret stays within the drawn window");
+    }
 }

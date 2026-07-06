@@ -55,8 +55,19 @@ public interface IEditorViewSource : IBlockViewSource
     /// The horizontal slide applied to the active block's revealed line (cells) at <paramref name="row"/> —
     /// <c>0</c> for a non-active block, the plain surface, or any row that is NOT the block's slid active
     /// line (only the active line is slid, so a click on another line of the active block gets no slide).
+    /// A table returns its column-window offset (every row) so the caret publish subtracts it and a click adds
+    /// it back through the same offset the grid draws with.
     /// </summary>
     int ActiveSlide(int blockIndex, int row);
+
+    /// <summary>
+    /// The on-screen drawn width in cells of the block at <paramref name="blockIndex"/> — the caret-publish clip
+    /// bound (<see cref="DocumentCaret"/> clamps the published visible column to it, so a caret deep in a focused
+    /// over-wide/truncated table cell, whose map cell is the unclipped natural column, never publishes past the
+    /// reveal/window clip and off-screen). A windowed table returns its visible sub-grid width; every other block
+    /// (and the plain surface) returns the viewport width.
+    /// </summary>
+    int VisibleWidth(int blockIndex);
 
     /// <summary>
     /// Notifies the bridge the caret moved to <paramref name="caret"/> — the markdown bridge reveals

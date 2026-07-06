@@ -131,8 +131,12 @@ internal sealed class DocumentCaret : ISelectionSource
         var (row, cell) = map.Locate(rel, _endAffinity);
 
         // On the markdown surface the active line is drawn horizontally slid to keep the caret visible
-        // (Decision 9); the published column is that slide subtracted. The plain surface reports slide 0.
-        return (_rows.BlockTopRow(blockIndex) + row, Math.Max(0, cell - _host.ActiveSlide(blockIndex, row)));
+        // (Decision 9); the published column is that slide (or a table's column-window offset) subtracted. Clamp
+        // to the block's on-screen drawn width so a caret deep in a focused over-wide/truncated cell (whose map
+        // cell is the UNCLIPPED natural column, drawn only up to the reveal/window clip) never publishes past the
+        // clip edge and off-screen. The plain surface reports slide 0 and the viewport width.
+        int visible = Math.Clamp(cell - _host.ActiveSlide(blockIndex, row), 0, Math.Max(0, _host.VisibleWidth(blockIndex)));
+        return (_rows.BlockTopRow(blockIndex) + row, visible);
     }
 
     // ───────────────────────────── horizontal motion ─────────────────────────────
@@ -394,7 +398,11 @@ internal sealed class DocumentCaret : ISelectionSource
 
         var (blockIndex, map, rel) = LocateCaret();
         var (rowInBlock, cell) = map.Locate(rel, _endAffinity);
-        int goal = _goalCell >= 0 ? _goalCell : cell;
+        // The goal column is a VISIBLE column (what the user sees), so a slid prose line or a windowed/overflowing
+        // table records the on-screen column — the active-line slide / table column-window offset subtracted, the
+        // same as the caret publishes (VisualDocumentPosition). Otherwise vertical motion out of a windowed table
+        // would carry the UNCLIPPED cell (~45) as the goal and land far right in the block below.
+        int goal = _goalCell >= 0 ? _goalCell : cell - _host.ActiveSlide(blockIndex, rowInBlock);
         int docRow = _rows.BlockTopRow(blockIndex) + rowInBlock;
         int targetRow = Math.Clamp(docRow + deltaRows, 0, totalRows - 1);
 
@@ -406,7 +414,9 @@ internal sealed class DocumentCaret : ISelectionSource
         int targetBlock = _rows.BlockIndexOfRow(targetRow);
         var targetMap = GetMap(targetBlock);
         int targetRowInBlock = Math.Clamp(targetRow - _rows.BlockTopRow(targetBlock), 0, targetMap.RowCount - 1);
-        int landingRel = targetMap.OffsetAt(targetRowInBlock, goal);
+        // Land at the goal in the target's own UNCLIPPED map space — add its slide/window offset back (the mirror
+        // of the capture above, matching how PositionFromContentPoint resolves a click).
+        int landingRel = targetMap.OffsetAt(targetRowInBlock, goal + _host.ActiveSlide(targetBlock, targetRowInBlock));
         bool affinity = targetMap.Locate(landingRel).Row != targetRowInBlock;
 
         MoveTo(PositionOfBlockRel(targetBlock, landingRel), extend, affinity, goal);

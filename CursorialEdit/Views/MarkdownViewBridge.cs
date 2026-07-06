@@ -416,8 +416,10 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         // caret publish subtracts it / a click adds it back here, so both stay consistent with the drawn grid —
         // returned whenever the table overflows, even before it becomes the active block (a click into an
         // off-window column needs it). A table that fits returns 0 (its map reports published cells directly).
+        // Gated on Formatted (like GetCaretMap) so the two can never disagree — raw mode renders the table as
+        // verbatim source with no window (and its presenter is a RawSourcePresenter there anyway).
         if (presenter is TablePresenter table)
-            return table.WindowOffset;
+            return _viewMode == ViewMode.Formatted ? table.WindowOffset : 0;
 
         if (_activeBlockId != id || presenter.ActiveLine is null)
             return 0;
@@ -429,6 +431,18 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         var map = presenter.MapForWidth(Math.Max(1, _wrapWidth));
         bool activeRow = _viewMode == ViewMode.Raw ? row == presenter.ActiveLine : map.IsActiveRow(row);
         return activeRow ? presenter.SlideOffset : 0;
+    }
+
+    /// <inheritdoc/>
+    public int VisibleWidth(int blockIndex)
+    {
+        // A windowed table publishes into its visible sub-grid, so its drawn width is the caret-publish clip bound;
+        // every other block (and raw mode) uses the viewport. Gated on Formatted like ActiveSlide so they agree.
+        if (_viewMode == ViewMode.Formatted && blockIndex >= 0 && blockIndex < Blocks.Count
+            && _presenters.TryGetValue(Blocks[blockIndex].Id, out var presenter) && presenter is TablePresenter table)
+            return table.RenderedWidth;
+
+        return Math.Max(1, _wrapWidth);
     }
 
     /// <inheritdoc/>
