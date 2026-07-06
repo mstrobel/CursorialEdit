@@ -331,4 +331,30 @@ public sealed class TableInlineFormatTests
         // The edit lands in the RAW source between 'o' and 'l' → `**boXld**` (editing is raw, unaffected by formatting).
         Assert.Equal("| **boXld** | z |", h.Buffer.GetLine(2).Text);
     }
+
+    [Fact]
+    public void EmptyDisplayCell_FallsBackToRaw_StaysVisible()
+    {
+        // A cell whose whole content is all-mark-no-text — an empty-alt image `![](x)` — projects to an EMPTY
+        // formatted display. It must fall back to raw rendering (visible source + a clickable stop), not vanish
+        // into an invisible, un-clickable cell. (Review finding #1.)
+        var (presenter, _) = Build("| H | K |\n|---|---|\n| ![](x) | z |");
+        using var h = PresenterHarness.Show([presenter], nameof(Cursorial.UI.Testing.TestCapabilities.KittyTruecolor), columns: 40, rows: 14);
+
+        Assert.Contains("![](x)", h.RowTrimmed(BodyRow)); // rendered raw, not an empty invisible cell
+    }
+
+    [Fact]
+    public void EndKey_IntoAFormattedCellEndingInMarks_LandsAtContentEnd_NotInsideTheEmphasis()
+    {
+        // End into a formatted last cell ending in hidden marks must reach the cell's TRUE content end (after
+        // `**`), so a following keystroke appends AFTER the emphasis, not inside it (`**d**X`, not `**dX**`).
+        // (Review finding #2.)
+        using var h = MarkdownEditingHarness.Create("| H | K |\n|---|---|\n| c | **d** |\n", columns: 40, rows: 12);
+        h.Click(2, BodyRow); // into body cell 0 "c"
+        h.Key(Cursorial.Input.Key.End);
+        h.Type("X");
+
+        Assert.Equal("| c | **d**X |", h.Buffer.GetLine(2).Text);
+    }
 }

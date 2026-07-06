@@ -183,8 +183,18 @@ internal sealed class TableCaretMap : ICaretMap
         if (fragment.StyledRuns is { Count: > 0 } styled)
         {
             int alignedX = fragment.Ellipsis ? metrics.ContentX(column) : metrics.AlignedX(column, fragment.Width);
-            foreach (var run in styled)
-                stops.Add(new Stop(alignedX + run.CellOffset, run.Width, run.SrcStart, run.SrcLength, Empty: false));
+            int fragEnd = fragment.SrcStart + fragment.SrcLength; // the fragment's content end (past trailing hidden marks)
+            for (var i = 0; i < styled.Count; i++)
+            {
+                var run = styled[i];
+                // The LAST run of the fragment absorbs any trailing hidden marks up to the content end, so
+                // End / a caret at the cell's visual end lands at the TRUE content end (past e.g. a closing
+                // `**`), not before the marks. Only extends the stop's source SPAN — its display width is
+                // unchanged, and a formatted cell's trailing-mark offsets are never Located (the caret's cell
+                // is always the active/raw one), so clicks still land on the visible text.
+                int srcLen = i == styled.Count - 1 ? fragEnd - run.SrcStart : run.SrcLength;
+                stops.Add(new Stop(alignedX + run.CellOffset, run.Width, run.SrcStart, srcLen, Empty: false));
+            }
             return;
         }
 

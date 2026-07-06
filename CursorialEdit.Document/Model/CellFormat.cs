@@ -151,6 +151,13 @@ internal sealed class CellFormat
         displayToSrc.Add(contentStart + n); // the display end maps to the content end (past any trailing mark)
 
         string display = sb.ToString();
+        if (display.Length == 0)
+            // The content is ALL mark with no visible child — an empty-alt image ![](url) or empty-text link
+            // [](url). A marks-hidden display would be invisible AND, being span-non-empty but fragment-empty,
+            // leave the cell with no caret stop. Fall back to the raw path: render the source verbatim with a
+            // clickable stop, exactly as the pre-formatting behavior did.
+            return Plain(content, contentStart);
+
         int width = GraphemeWidth.StringWidth(display);
         return new CellFormat(display, isPlain: false, width, contentStart, n, [.. styleAt], [.. displayToSrc]);
     }

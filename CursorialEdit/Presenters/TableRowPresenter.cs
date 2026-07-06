@@ -644,6 +644,7 @@ internal sealed class TableRowPresenter : UIElement
                     sb.Append(run.Glyph);
                 else
                     sb.Append(Slice(run.SrcStart, run.SrcLen));
+                sb.Append('#').Append((int)run.Style); // a formatting-only change (an inactive cell restyled, same text) must re-raster too
                 sb.Append('|');
             }
 
