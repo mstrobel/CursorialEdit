@@ -261,7 +261,7 @@ internal sealed class TableRowPresenter : UIElement
 
     private TableVisualLine[] BuildLines(out string signature)
     {
-        var layout = _model.LayoutRow(_logicalRow);
+        var layout = _model.LayoutRow(_logicalRow, _metrics.ColumnWidths);
         bool isLast = _logicalRow == _model.RowCount - 1;
 
         var lines = new List<TableVisualLine>();

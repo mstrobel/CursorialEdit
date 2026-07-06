@@ -299,7 +299,7 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         var model = TableModel.Build(block, source);
         return model is null
             ? new FallbackSourcePresenter(lines, block.Kind)
-            : new TablePresenter(lines, model, source);
+            : new TablePresenter(lines, model, source, Math.Max(0, _wrapWidth)); // viewport-aware from the first frame
     }
 
     /// <summary>A block's serialized source (lines + terminators) — the same string <c>LeafBlockPresenter.BlockText()</c> produces, so table cell spans index it.</summary>
@@ -344,7 +344,7 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         {
             string tableSource = BlockSource(BuildLines(blockIndex, block));
             if (TableModel.Build(block, tableSource) is { } offBandModel)
-                return TableCaretMap.Build(offBandModel, TableGridMetrics.Build(offBandModel), tableSource);
+                return TableCaretMap.Build(offBandModel, TableGridMetrics.BuildForViewport(offBandModel, Math.Max(1, _wrapWidth)), tableSource);
         }
 
         return RunMapBuilder.Build(

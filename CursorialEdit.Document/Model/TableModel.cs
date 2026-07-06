@@ -1,4 +1,7 @@
+using Cursorial.Rendering.Text;
 using Cursorial.Text;
+
+using CursorialEdit.Layout;
 
 using MdTable = Markdig.Extensions.Tables.Table;
 using MdTableRow = Markdig.Extensions.Tables.TableRow;
@@ -28,12 +31,18 @@ namespace CursorialEdit.Document.Model;
 /// keeps the delimiter row out of the row set — both surface here unchanged.
 /// </para>
 /// <para>
-/// <b>Widths are measured in cells (§5.1 [CRITICAL]).</b> Per column the model caches
-/// <c>(WidthCells, MaxContentWidth, CountAtMax)</c>: <see cref="MaxContentWidth"/> is the maximum
-/// <see cref="GraphemeWidth.StringWidth"/> over the column's trimmed cell contents (header and body),
-/// <see cref="ColumnWidth"/> is that clamped to <c>[3, 40]</c>, and <see cref="CountAtMax"/> is how
-/// many cells sit at the maximum — the O(1) shrink-detection cache (Decision 11): WP5 recomputes a
-/// column only when the <i>unique</i> widest cell (<c>CountAtMax == 1</c>) shrank.
+/// <b>Widths are measured in cells (§5.1 [CRITICAL]) and are now viewport-aware (Decision 11, revised
+/// 2026-07-05).</b> Per column the model caches <c>(WidthCells, MaxContentWidth, CountAtMax)</c>:
+/// <see cref="MaxContentWidth"/> is the maximum <see cref="GraphemeWidth.StringWidth"/> over the column's
+/// trimmed cell contents (header and body); <see cref="NaturalWidth"/> is that floored at
+/// <see cref="MinWidth"/> (no cap) — the width the column <i>wants</i>; and <see cref="CountAtMax"/> is how
+/// many cells sit at the maximum (the O(1) shrink-detection cache). The final rendered widths are no longer
+/// a hard content clamp: <see cref="ResolveColumnWidths"/> takes the <b>available viewport budget</b> (known
+/// at MEASURE time, threaded in by <c>TablePresenter</c>) and does browser-like auto-layout — if the natural
+/// table fits, every column grows to its content (may exceed the old 40 cap); if it overflows, the widest
+/// column(s) shrink (never below <see cref="MinWidth"/>) and their content word-wraps to fit. The legacy
+/// <see cref="ColumnWidth"/> — <see cref="MaxContentWidth"/> clamped to <c>[3, 40]</c> — survives only as a
+/// viewport-unaware <b>fallback</b> (pre-measure / off-band caret map), never the primary constraint.
 /// </para>
 /// <para>
 /// <b>The cell-layout pass (<see cref="LayoutRow"/>) is the single owner of wrapped-cell → visual-row
@@ -73,8 +82,20 @@ public sealed class TableModel
     /// <summary>The GFM alignment of <paramref name="column"/> (from the delimiter row); <see cref="ColumnAlignment.None"/> for an unaligned or ragged-excess column.</summary>
     public ColumnAlignment Alignment(int column) => _columns[column].Alignment;
 
-    /// <summary>The rendered width of <paramref name="column"/> in cells: <see cref="MaxContentWidth"/> clamped to <c>[3, 40]</c> (§5.1).</summary>
+    /// <summary>
+    /// The <b>fallback</b> (viewport-unaware) width of <paramref name="column"/> in cells:
+    /// <see cref="MaxContentWidth"/> clamped to <c>[3, 40]</c> (the old §5.1 cap). Used only where no viewport
+    /// budget is available (a pre-measure presenter, an off-band caret map); the rendered widths come from
+    /// <see cref="ResolveColumnWidths"/>.
+    /// </summary>
     public int ColumnWidth(int column) => _columns[column].WidthCells;
+
+    /// <summary>
+    /// The width <paramref name="column"/> <i>wants</i>: <see cref="MaxContentWidth"/> floored at
+    /// <see cref="MinWidth"/> with <b>no</b> maximum cap — the natural content width the viewport-aware
+    /// auto-layout (<see cref="ResolveColumnWidths"/>) grows the column to when the table fits.
+    /// </summary>
+    public int NaturalWidth(int column) => Math.Max(MinWidth, _columns[column].MaxContentWidth);
 
     /// <summary>The maximum trimmed-content cell width in <paramref name="column"/>, measured in cells (pre-clamp) — the reflow input.</summary>
     public int MaxContentWidth(int column) => _columns[column].MaxContentWidth;
@@ -186,16 +207,114 @@ public sealed class TableModel
     }
 
     /// <summary>
-    /// The cell-layout pass for logical <paramref name="row"/> under <paramref name="overflow"/> (M3 risk a):
-    /// the ordered list of visual rows the row occupies, each carrying one <see cref="CellFragment"/> per
-    /// column. A cell wider than its column wraps to several fragments (grapheme-snapped), so the row's
-    /// visual height is the maximum fragment count over its cells (≥ 1). WP1 implements
-    /// <see cref="TableOverflow.Wrap"/> only.
+    /// The viewport-aware column widths for a table drawn into <paramref name="contentBudget"/> cells of
+    /// content space (the viewport width minus the border/padding chrome — the presenter subtracts the chrome
+    /// and passes the remainder here). Browser-like table auto-layout (Decision 11, revised):
+    /// <list type="bullet">
+    /// <item>If the natural table (Σ <see cref="NaturalWidth"/>) <b>fits</b> the budget, every column keeps its
+    /// natural width — columns grow to content, nothing wraps (may exceed the old 40 cap when the viewport has
+    /// room). This is the common case that fixes "empty viewport, still wrapping".</item>
+    /// <item>If it <b>overflows</b>, the widest column(s) shrink toward a common ceiling (widest-first for the
+    /// remainder) until the row fits, but never below <see cref="MinWidth"/>; the shrunk cells then word-wrap
+    /// (<see cref="WrapCell"/>).</item>
+    /// <item>If the budget is below even <c>ColumnCount × MinWidth</c>, every column sits at <see cref="MinWidth"/>
+    /// and the table overflows horizontally (the WP6 column-window will scroll it inside the presenter).</item>
+    /// </list>
     /// </summary>
+    /// <param name="contentBudget">The cells available for column content (viewport width minus grid chrome).</param>
+    /// <returns>One resolved width (in cells) per column, in column order.</returns>
+    public int[] ResolveColumnWidths(int contentBudget)
+    {
+        int n = _columns.Length;
+        var natural = new int[n];
+        long naturalSum = 0;
+        for (var c = 0; c < n; c++)
+        {
+            natural[c] = Math.Max(MinWidth, _columns[c].MaxContentWidth);
+            naturalSum += natural[c];
+        }
+
+        if (n == 0 || naturalSum <= contentBudget)
+            return natural; // the natural table fits — columns grow to content, no wrap
+
+        long minSum = (long)n * MinWidth;
+        if (contentBudget <= minSum)
+        {
+            var floored = new int[n];
+            Array.Fill(floored, MinWidth);
+            return floored; // cannot fit even at the floor — accept horizontal overflow (WP6 column-window)
+        }
+
+        // Water-fill: the largest common ceiling `cap` with Σ clamp(natural, [Min, cap]) ≤ budget — this lowers
+        // only the columns wider than `cap` (the widest), matching HTML auto-layout's "shrink the widest".
+        int maxNatural = 0;
+        foreach (int w in natural)
+            maxNatural = Math.Max(maxNatural, w);
+
+        int lo = MinWidth, hi = maxNatural, cap = MinWidth;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) >> 1;
+            long sum = 0;
+            foreach (int w in natural)
+                sum += Math.Max(MinWidth, Math.Min(w, mid));
+            if (sum <= contentBudget)
+            {
+                cap = mid;
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid - 1;
+            }
+        }
+
+        var widths = new int[n];
+        long used = 0;
+        for (var c = 0; c < n; c++)
+        {
+            widths[c] = Math.Max(MinWidth, Math.Min(natural[c], cap));
+            used += widths[c];
+        }
+
+        // Hand the integer remainder (budget − Σcap) to the still-below-natural columns, widest natural first,
+        // so the fit is exact and the extra cells land on the columns that most want them.
+        int leftover = (int)(contentBudget - used);
+        if (leftover > 0)
+        {
+            var order = new List<int>(n);
+            for (var c = 0; c < n; c++)
+                if (widths[c] < natural[c])
+                    order.Add(c);
+            order.Sort((a, b) => natural[b] != natural[a] ? natural[b] - natural[a] : a - b);
+            foreach (int c in order)
+            {
+                if (leftover == 0)
+                    break;
+                widths[c]++;
+                leftover--;
+            }
+        }
+
+        return widths;
+    }
+
+    /// <summary>
+    /// The cell-layout pass for logical <paramref name="row"/> against the resolved
+    /// <paramref name="columnWidths"/> under <paramref name="overflow"/> (M3 risk a — <b>the single owner</b>
+    /// of wrapped-cell → visual-row mapping): the ordered list of visual rows the row occupies, each carrying
+    /// one <see cref="CellFragment"/> per column. A cell wider than its column word-wraps (<see cref="WrapCell"/>)
+    /// to several fragments, so the row's visual height is the maximum fragment count over its cells (≥ 1).
+    /// <paramref name="columnWidths"/> are the viewport-aware widths from <see cref="ResolveColumnWidths"/>
+    /// (the presenter's shared grid metrics); the parameterless overload uses the <see cref="ColumnWidth"/>
+    /// fallback. Implements <see cref="TableOverflow.Wrap"/> only.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="columnWidths"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="row"/> is out of range.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="overflow"/> is not <see cref="TableOverflow.Wrap"/> (truncate / column-window are WP6).</exception>
-    public TableRowLayout LayoutRow(int row, TableOverflow overflow = TableOverflow.Wrap)
+    public TableRowLayout LayoutRow(int row, IReadOnlyList<int> columnWidths, TableOverflow overflow = TableOverflow.Wrap)
     {
+        ArgumentNullException.ThrowIfNull(columnWidths);
         ArgumentOutOfRangeException.ThrowIfNegative(row);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(row, _rows.Length);
         if (overflow != TableOverflow.Wrap)
@@ -204,13 +323,14 @@ public sealed class TableModel
         var r = _rows[row];
         int columns = _columns.Length;
 
-        // Per column: the cell's content wrapped to its column width. The row's visual height is the max
-        // fragment count over its cells — the single place wrapped-cell → visual-row mapping is decided.
+        // Per column: the cell's content word-wrapped to its (viewport-resolved) width. The row's visual height
+        // is the max fragment count over its cells — the single place wrapped-cell → visual-row mapping is decided.
         var perColumn = new CellFragment[columns][];
         int visualRows = 1;
         for (var c = 0; c < columns; c++)
         {
-            perColumn[c] = WrapCell(r.Cells[c], _columns[c].WidthCells);
+            int width = c < columnWidths.Count ? columnWidths[c] : _columns[c].WidthCells;
+            perColumn[c] = WrapCell(r.Cells[c], width);
             visualRows = Math.Max(visualRows, perColumn[c].Length);
         }
 
@@ -224,6 +344,21 @@ public sealed class TableModel
         }
 
         return new TableRowLayout(row, r.IsHeader, r.SourceLine, rows);
+    }
+
+    /// <summary>
+    /// The cell-layout pass using the viewport-unaware <see cref="ColumnWidth"/> fallback widths — for callers
+    /// with no viewport budget (a direct model query / test). The presenter path uses the
+    /// <see cref="LayoutRow(int, IReadOnlyList{int}, TableOverflow)"/> overload with the resolved widths.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="row"/> is out of range.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="overflow"/> is not <see cref="TableOverflow.Wrap"/>.</exception>
+    public TableRowLayout LayoutRow(int row, TableOverflow overflow = TableOverflow.Wrap)
+    {
+        var widths = new int[_columns.Length];
+        for (var c = 0; c < _columns.Length; c++)
+            widths[c] = _columns[c].WidthCells;
+        return LayoutRow(row, widths, overflow);
     }
 
     /// <summary>
@@ -532,9 +667,13 @@ public sealed class TableModel
         span.IsEmpty ? string.Empty : _source.Substring(span.Start, span.Length);
 
     /// <summary>
-    /// Wraps one cell's trimmed content to <paramref name="width"/> cells, splitting only on grapheme
-    /// boundaries (a wide cluster is never halved — M3 risk a). An empty cell yields a single empty
-    /// fragment so it still occupies one visual row.
+    /// Word-wraps one cell's trimmed content to <paramref name="width"/> cells (M3 risk a), reusing the
+    /// <b>same framework word-wrap the prose blocks use</b> — <see cref="CaretNavigator.Wrap"/> under
+    /// <see cref="WrapMode.WordWrap"/>: breaks land at word boundaries; a single word longer than the column
+    /// hard-breaks at the overflowing grapheme cluster (the char-level fallback, only for an over-long word);
+    /// and every break is a grapheme-cluster boundary, so a wide cluster is never halved. The segments tile
+    /// the content exactly, so the fragments' source slices reconstruct the whole cell (the caret round-trips).
+    /// An empty cell yields a single empty fragment so it still occupies one visual row.
     /// </summary>
     private CellFragment[] WrapCell(CellSpan span, int width)
     {
@@ -543,34 +682,18 @@ public sealed class TableModel
             return [new CellFragment(srcStart, 0, 0)];
 
         int budget = Math.Max(1, width);
-        var fragments = new List<CellFragment>();
+        var wrapped = CaretNavigator.Wrap(text, budget, WrapMode.WordWrap);
 
-        int fragStart = srcStart;
-        int fragChars = 0;
-        int fragWidth = 0;
-        int offset = 0;
-
-        var clusters = text.AsSpan().GetGraphemeEnumerator();
-        while (clusters.MoveNext())
+        int rowCount = wrapped.RowCount;
+        var fragments = new CellFragment[rowCount];
+        for (var v = 0; v < rowCount; v++)
         {
-            var cluster = clusters.Current;
-            int clusterWidth = GraphemeWidth.ClusterWidth(cluster);
-
-            if (fragWidth > 0 && fragWidth + clusterWidth > budget)
-            {
-                fragments.Add(new CellFragment(fragStart, fragChars, fragWidth));
-                fragStart = srcStart + offset;
-                fragChars = 0;
-                fragWidth = 0;
-            }
-
-            fragChars += cluster.Length;
-            fragWidth += clusterWidth;
-            offset += cluster.Length;
+            int start = wrapped.RowStart(v);
+            int length = wrapped.RowEnd(v) - start;
+            fragments[v] = new CellFragment(srcStart + start, length, wrapped.RowWidth(v));
         }
 
-        fragments.Add(new CellFragment(fragStart, fragChars, fragWidth));
-        return [.. fragments];
+        return fragments;
     }
 
     private static ColumnAlignment MapAlignment(MdTableAlign? align) => align switch

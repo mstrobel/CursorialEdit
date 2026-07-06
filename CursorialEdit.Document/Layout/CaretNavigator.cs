@@ -13,6 +13,13 @@ namespace CursorialEdit.Layout;
 /// </summary>
 /// <remarks>
 /// <para>
+/// <b>Project home (2026-07-05).</b> This type lives in the <c>CursorialEdit.Document</c> project (not the
+/// app project) so the framework word-wrap can be shared by both callers: the run-map layout in the app
+/// project (prose reveal) <i>and</i> <see cref="CursorialEdit.Document.Model.TableModel"/>'s word-aware cell
+/// wrap in the Document project. It has no app-layer dependency, so the relocation is behaviour-neutral; the app project reaches it
+/// through its ordinary reference to the Document project (namespace unchanged).
+/// </para>
+/// <para>
 /// <b>Coordinates.</b> A <i>col</i> is a UTF-16 code-unit offset into the line (the document model's
 /// <c>TextPosition.Col</c> convention); a <i>cell</i> is a terminal display column measured by
 /// <see cref="GraphemeWidth"/> (goal columns are cells — architecture §2.4). Every col this class

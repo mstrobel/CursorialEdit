@@ -69,7 +69,7 @@ internal sealed class TableCaretMap : ICaretMap
             if (r == 0)
                 rows.Add(new GridRow([])); // top border
 
-            var layout = model.LayoutRow(r);
+            var layout = model.LayoutRow(r, metrics.ColumnWidths);
             for (var v = 0; v < layout.VisualRowCount; v++)
             {
                 var stops = new List<Stop>(columns);

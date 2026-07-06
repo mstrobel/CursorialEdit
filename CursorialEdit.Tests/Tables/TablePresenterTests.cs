@@ -107,16 +107,19 @@ public class TablePresenterTests
     [Fact]
     public void WrappedCell_GrowsItsRow_WithoutMovingOtherRows()
     {
+        // Viewport 52: chrome = 2·3+1 = 7, content budget 45. The natural table (col0 "short" = 5, col1 = 50)
+        // is 55 > 45, so the widest column (col1) shrinks to 40 (5+40 = 45) and its 50-x content word-wraps
+        // (one long word ⇒ char-fallback at the column edge) to 40 + 10 across two visual rows.
         var presenter = Build("| short | " + new string('x', 50) + " |\n|---|---|\n| a | b |\n");
-        using var harness = Show(presenter, columns: 60, rows: 16);
+        using var harness = Show(presenter, columns: 52, rows: 16);
 
-        // Header row 0 wraps its 50-cell cell to two content visual rows → row height 4 (top + 2 + sep);
+        // Header row 0 wraps its now-40-cell column to two content visual rows → row height 4 (top + 2 + sep);
         // the plain body row stays height 2 (content + bottom). Total table height 6.
         Assert.Equal(4, presenter.Rows[0].RowHeight);
         Assert.Equal(2, presenter.Rows[1].RowHeight);
-        Assert.Equal(6, presenter.MeasuredHeight(60));
+        Assert.Equal(6, presenter.MeasuredHeight(52));
 
-        // The wrap draws a second content row of x's between the header content and the separator.
+        // The wrap draws a second content row of x's (the overflowing 10) between the header content and the separator.
         Assert.Contains("xxxx", harness.RowTrimmed(2));
         Assert.StartsWith("│", harness.RowTrimmed(2)); // still bordered
     }

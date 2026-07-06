@@ -34,6 +34,11 @@ public sealed class TablePresenter : LeafBlockPresenter
     private string _source;
     private int _height;
 
+    // The viewport width (in cells) the current column widths were resolved at — the auto-layout input
+    // (Decision 11, revised). A MeasureOverride at a different width re-resolves + re-lays-out the table
+    // (the resize trigger, on top of WP5's content-edit reflow); 0 = not yet measured (fallback widths).
+    private int _measuredColumns;
+
     private TableCaretMap? _caretMap;
 
     private TableModel? _pendingModel;
@@ -45,7 +50,12 @@ public sealed class TablePresenter : LeafBlockPresenter
     /// <param name="lines">The block's source lines.</param>
     /// <param name="model">The table overlay built from the block (<see cref="TableModel.Build"/>).</param>
     /// <param name="source">The block's serialized source (must equal the block's <c>BlockText()</c>) — the cell spans index it.</param>
-    public TablePresenter(IReadOnlyList<Line> lines, TableModel model, string source)
+    /// <param name="availableColumns">
+    /// The current viewport width in cells, threaded from the bridge so the initial column widths are already
+    /// viewport-aware (Decision 11, revised) and the first frame does not reflow. <c>0</c> (unknown) resolves
+    /// to the content-clamped fallback until the first <see cref="MeasureOverride"/> supplies a real width.
+    /// </param>
+    public TablePresenter(IReadOnlyList<Line> lines, TableModel model, string source, int availableColumns = 0)
         : base(lines, [], BlockKind.Table, headingLevel: null, WrapMode.NoWrap)
     {
         ArgumentNullException.ThrowIfNull(model);
@@ -53,7 +63,8 @@ public sealed class TablePresenter : LeafBlockPresenter
 
         _model = model;
         _source = source;
-        _metrics = TableGridMetrics.Build(model);
+        _measuredColumns = availableColumns;
+        _metrics = TableGridMetrics.BuildForViewport(model, availableColumns);
         BuildChildren();
     }
 
@@ -101,7 +112,10 @@ public sealed class TablePresenter : LeafBlockPresenter
         var oldSource = _source;
         _model = model;
         _source = source;
-        _metrics = TableGridMetrics.Build(model);
+        // Re-resolve widths at the CURRENT viewport (WP5 content reflow is a layer under the viewport-fit): a
+        // content edit that changes a column's natural width may or may not move the resolved widths, and the
+        // metrics-equality check below (geometryChanged) still bounds the re-raster accordingly.
+        _metrics = TableGridMetrics.BuildForViewport(model, _measuredColumns);
         _caretMap = null; // the geometry/source moved — the next caret query rebuilds the map
 
         // A row-count / column-count change re-forms the child set; otherwise reconcile in place and
@@ -190,12 +204,47 @@ public sealed class TablePresenter : LeafBlockPresenter
     /// <inheritdoc/>
     protected override Size MeasureOverride(Size availableSize)
     {
+        // The available viewport width is known here (never at parse). A change from the last measure — a
+        // terminal RESIZE — re-resolves the column widths and re-lays-out the table (the new trigger beyond
+        // WP5's content-edit reflow); an unchanged width is the common case and skips straight to measuring.
+        int available = Math.Max(1, availableSize.Columns);
+        if (available != _measuredColumns)
+        {
+            _measuredColumns = available;
+            ApplyViewportWidths();
+        }
+
         foreach (var row in _rows)
             row.Measure(availableSize);
 
         _height = SumHeights();
         MeasuredCallback?.Invoke(this, _height);
         return new Size(_metrics.Width, _height);
+    }
+
+    /// <summary>
+    /// Re-resolves the column widths for the current viewport (<see cref="_measuredColumns"/>) and, when they
+    /// moved, re-lays-out the table: a resize recomputes widths for ALL columns, so this is a geometry change —
+    /// every row re-derives its wrapped layout + run map against the new widths and re-rasters its border band,
+    /// exactly like a content-driven width change (it flows through the same per-row reconcile). Bounded to the
+    /// table: the surrounding document's presenters are separate render boundaries and are never touched here.
+    /// Row/column counts are viewport-invariant, so the child set is reused (no <see cref="RebuildChildren"/>).
+    /// </summary>
+    private void ApplyViewportWidths()
+    {
+        var newMetrics = TableGridMetrics.BuildForViewport(_model, _measuredColumns);
+        if (newMetrics.Equals(_metrics))
+            return; // the viewport change did not move any column — nothing to re-lay-out
+
+        _metrics = newMetrics;
+        _caretMap = null; // the divider band moved — the next caret query rebuilds the map on the new geometry
+
+        foreach (var row in _rows)
+        {
+            row.Refresh(_model, _metrics, _source);
+            row.InvalidateMeasure();
+            row.InvalidateVisual();
+        }
     }
 
     /// <inheritdoc/>
