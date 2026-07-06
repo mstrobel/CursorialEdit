@@ -128,6 +128,20 @@ public sealed class BlockRunMapTests
     }
 
     [Fact]
+    public void LoneCarriageReturn_IsOneVisualRow_NotHardBroken()
+    {
+        // A lone '\r' is in-line CONTENT (not a terminator — LineEnding), so the buffer keeps it inside Line.Text.
+        // TextLayout.Build hard-breaks on '\r', which would split one source line into phantom rows with a gap at
+        // the CR (mismapping caret offsets). It is sanitized to its control picture ␍ — a 1:1 substitution — so the
+        // line stays one contiguous run of rows. (FB-1 adoption review regression.)
+        var map = BlockRunMap.Build([L("ab\rcd")], wrapWidth: 40);
+
+        Assert.Equal(1, map.RowCount);                    // one row, not two
+        Assert.Equal("ab␍cd", map.RowText(0).ToString()); // the stray CR shows in place as ␍
+        Assert.Equal(3, map.NearestOffset(0, 3));         // the 'c' after the CR maps to source offset 3 — no gap
+    }
+
+    [Fact]
     public void Build_RequiresAtLeastOneLine()
     {
         Assert.Throws<ArgumentException>(static () => BlockRunMap.Build([], wrapWidth: 10));

@@ -240,4 +240,24 @@ public sealed class RunMapTests
         Assert.Equal(1, map.RowCount);
         Assert.Equal(40, map.RowWidth(0));
     }
+
+    [Fact]
+    public void LoneCarriageReturn_Paragraph_IsOneRow_NotHardBroken()
+    {
+        // A lone '\r' is in-line content (LineEnding), but TextLayout.Build hard-breaks on it — so it is
+        // sanitized to its control picture ␍ (1:1). The paragraph "ab\rcd" stays one row of width 5, not two
+        // rows split at the CR. (FB-1 adoption review regression.)
+        var map = Plain("ab\rcd", wrap: 40);
+        Assert.Equal(1, map.RowCount);
+        Assert.Equal(5, map.RowWidth(0));
+    }
+
+    [Fact]
+    public void LoneCarriageReturn_RawView_KeepsVerbatimOneRow()
+    {
+        // Raw view's "every source line renders verbatim as one visual row" contract must survive a lone '\r'.
+        var map = RunMapBuilder.BuildRaw(Lines("ab\rcd"), wrapWidth: 40);
+        Assert.Equal(1, map.RowCount);
+        Assert.Equal(5, map.RowWidth(0));
+    }
 }

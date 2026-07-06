@@ -122,6 +122,11 @@ public static class RunMapBuilder
                 marker, markerStart, markerLen, hardBreakLen, revealed,
                 out string display, out int[] toDisplay, out int[] toSrc);
 
+            // A lone '\r' surviving from the source (in-line content, not a terminator) would hard-break the
+            // display in TextLayout.Build — splitting one source line into phantom rows and mismapping offsets.
+            // Sanitize it to its control picture (1:1, so toDisplay/toSrc stay valid) before wrap AND run-build.
+            display = DisplayText.SanitizeControls(display);
+
             // A revealed line is force-unwrapped only in SLIDE mode; in wrap-reveal it wraps in place under
             // the block's wrapMode (marks shown), so a prose paragraph keeps its context while edited.
             var lineWrap = revealed && revealSlides ? WrapMode.NoWrap : wrapMode;
@@ -201,6 +206,10 @@ public static class RunMapBuilder
                 lines[i].Text, lineSrcStart[i], mark, content, style,
                 marker: SegKind.Content, markerStart: 0, markerLen: 0, hardBreakLen: 0, revealed: false,
                 out string display, out int[] toDisplay, out int[] toSrc);
+
+            // NoWrap disables SOFT wrap, not TextLayout.Build's hard break on '\r' — a lone CR in raw source
+            // would still split the "verbatim one row" contract. Sanitize it (1:1) to its control picture.
+            display = DisplayText.SanitizeControls(display);
 
             wrapped[i] = TextLayout.Build(display, wrapWidth, WrapMode.NoWrap);
             srcToDisplay[i] = toDisplay;

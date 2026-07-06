@@ -93,11 +93,14 @@ public sealed class BlockRunMap : ICaretMap
         for (var i = 0; i < lines.Count; i++)
         {
             var line = lines[i];
-            lineTexts[i] = line.Text;
+            // Sanitize a lone '\r' (kept as in-line content by the buffer) to its control picture so
+            // TextLayout.Build cannot hard-break the line at it — a 1:1 substitution, so offsets stay aligned.
+            string display = DisplayText.SanitizeControls(line.Text);
+            lineTexts[i] = display;
             lineFirstRow[i] = rows.Count;
             lineSrcStart[i] = srcStart;
 
-            var wrappedLine = TextLayout.Build(line.Text, wrapWidth, WrapMode.WordWrap);
+            var wrappedLine = TextLayout.Build(display, wrapWidth, WrapMode.WordWrap);
             wrapped[i] = wrappedLine;
             for (var r = 0; r < wrappedLine.LineCount; r++)
             {

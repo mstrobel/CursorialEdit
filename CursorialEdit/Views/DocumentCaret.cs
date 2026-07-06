@@ -221,8 +221,9 @@ internal sealed class DocumentCaret : ISelectionSource
     private TextPosition NextCaretPosition(TextPosition pos)
     {
         bool hasCell = TryCell(pos, out int originCell);
+        var layout = GraphemeLayout.Build(_buffer.GetLine(pos.Line).Text); // once — the loop never leaves pos.Line
         var cur = pos;
-        while (RawNext(cur) is { } next)
+        while (RawNext(cur, layout) is { } next)
         {
             if (next.Line != pos.Line)
                 return next;                    // crossed a source line — always a visible move
@@ -240,8 +241,9 @@ internal sealed class DocumentCaret : ISelectionSource
     private TextPosition PrevCaretPosition(TextPosition pos)
     {
         bool hasCell = TryCell(pos, out int originCell);
+        var layout = GraphemeLayout.Build(_buffer.GetLine(pos.Line).Text); // once — the loop never leaves pos.Line
         var cur = pos;
-        while (RawPrev(cur) is { } prev)
+        while (RawPrev(cur, layout) is { } prev)
         {
             if (prev.Line != pos.Line)
                 return prev;
@@ -255,22 +257,27 @@ internal sealed class DocumentCaret : ISelectionSource
         return cur;
     }
 
-    /// <summary>The next source cluster boundary, crossing to the next line's start at the line end (null at the document end).</summary>
-    private TextPosition? RawNext(TextPosition pos)
+    /// <summary>
+    /// The next source cluster boundary (crossing to the next line's start at the line end; null at the
+    /// document end), reusing a caller-built <paramref name="lineLayout"/> of <paramref name="pos"/>'s line.
+    /// A same-line stepping loop (word / hidden-mark motion) builds it ONCE: the promoted
+    /// <see cref="GraphemeLayout"/> precomputes every boundary, so rebuilding it per step would be
+    /// O(steps × line) with an allocation each step (FB-1 review).
+    /// </summary>
+    private TextPosition? RawNext(TextPosition pos, in GraphemeLayout lineLayout)
     {
-        string text = _buffer.GetLine(pos.Line).Text;
-        if (pos.Col < text.Length)
-            return new(pos.Line, GraphemeLayout.Build(text).NextBoundary(pos.Col));
+        if (pos.Col < _buffer.GetLine(pos.Line).Text.Length)
+            return new(pos.Line, lineLayout.NextBoundary(pos.Col));
         if (pos.Line < _buffer.LineCount - 1)
             return new(pos.Line + 1, 0);
         return null;
     }
 
-    /// <summary>The previous source cluster boundary, crossing to the previous line's end at col 0 (null at the document start).</summary>
-    private TextPosition? RawPrev(TextPosition pos)
+    /// <summary>The previous source cluster boundary (crossing to the previous line's end at col 0; null at the document start), reusing a caller-built <paramref name="lineLayout"/> of <paramref name="pos"/>'s line (see <see cref="RawNext(TextPosition, in GraphemeLayout)"/>).</summary>
+    private TextPosition? RawPrev(TextPosition pos, in GraphemeLayout lineLayout)
     {
         if (pos.Col > 0)
-            return new(pos.Line, GraphemeLayout.Build(_buffer.GetLine(pos.Line).Text).PrevBoundary(pos.Col));
+            return new(pos.Line, lineLayout.PrevBoundary(pos.Col));
         if (pos.Line > 0)
             return new(pos.Line - 1, _buffer.GetLine(pos.Line - 1).Text.Length);
         return null;
@@ -315,8 +322,9 @@ internal sealed class DocumentCaret : ISelectionSource
     private TextPosition NextVisibleStop(TextPosition pos)
     {
         var origin = Visible(pos);
+        var layout = GraphemeLayout.Build(_buffer.GetLine(origin.Line).Text); // once — the loop never leaves origin.Line
         var cur = origin;
-        while (RawNext(cur) is { } next)
+        while (RawNext(cur, layout) is { } next)
         {
             if (next.Line != origin.Line)
                 return Visible(next);
@@ -333,8 +341,9 @@ internal sealed class DocumentCaret : ISelectionSource
     private TextPosition PrevVisibleStop(TextPosition pos)
     {
         var origin = Visible(pos);
+        var layout = GraphemeLayout.Build(_buffer.GetLine(origin.Line).Text); // once — the loop never leaves origin.Line
         var cur = origin;
-        while (RawPrev(cur) is { } prev)
+        while (RawPrev(cur, layout) is { } prev)
         {
             if (prev.Line != origin.Line)
                 return Visible(prev);
