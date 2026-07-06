@@ -2,6 +2,7 @@ using Cursorial.Input;
 using Cursorial.Output;
 
 using CursorialEdit.Document.Buffer;
+using CursorialEdit.Document.Editing;
 using CursorialEdit.Document.Model;
 using CursorialEdit.Presenters;
 using CursorialEdit.Tests.Editing;
@@ -251,6 +252,33 @@ public sealed class TableReflowTests
     // Selection is asserted on a BODY cell (the header row carries a fill that, on the 16-color tier,
     // quantizes to the same palette entry as the selection fill — a body cell has a plain background).
     private const string SelectionTable = "| h | w |\n|---|---|\n| hello | world |\n";
+
+    [Theory]
+    [MemberData(nameof(Presets))]
+    public void StructuralRebuild_WithUnchangedSelection_ClearsTheHighlight_NoStaleBox(string preset)
+    {
+        // Review finding 1: a RowCount-change reconcile (RebuildChildren) clears the highlighted-row set, but
+        // when the selection's range is unchanged the DocumentCaret was==now gate skips InvalidateSelectionOverlay,
+        // so the rebuilt rows draw the highlight while the tracking set is empty — a later clear then re-rasters
+        // nothing and the highlight goes STALE. RetrackHighlightedRows re-syncs the set after the rebuild.
+        using var h = MarkdownEditingHarness.Create("| A | B |\n|---|---|\n| a | b |\n", preset, columns: 40, rows: 12);
+
+        h.Click(2, ContentRow(1));                    // the 'a' of the body cell
+        h.Key(Key.RightArrow, KeyModifiers.Shift);    // select "a" → selection (2,2)-(2,3)
+        var fill = h.BackgroundAt(2, ContentRow(1));
+        Assert.NotEqual(fill, h.BackgroundAt(0, ContentRow(1))); // the border '│' is not the fill — the highlight is real
+
+        // Append a row BELOW the selection, PRESERVING it (before==after) → RowCount 2→3 → RebuildChildren with
+        // the was==now gate skipping InvalidateSelectionOverlay. This is the WP7-structural-op shape, forced here.
+        var keep = new CaretState(new TextPosition(2, 3), new TextPosition(2, 2));
+        h.Controller.Apply(new Edit(new TextPosition(3, 0), string.Empty, "| c | d |\n"), EditKind.Typing, keep, keep);
+        h.Settle();
+        Assert.Equal(fill, h.BackgroundAt(2, ContentRow(1))); // still selected → still highlighted through the rebuild
+
+        h.Key(Key.LeftArrow); // collapse the selection
+        h.Settle();
+        Assert.NotEqual(fill, h.BackgroundAt(2, ContentRow(1))); // highlight cleared — not a stale box
+    }
 
     [Theory]
     [MemberData(nameof(Presets))]

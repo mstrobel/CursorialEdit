@@ -229,6 +229,7 @@ public sealed class TablePresenter : LeafBlockPresenter
     internal override void InvalidateSelectionOverlay()
     {
         var now = SelectionProvider?.Invoke();
+        var lineStarts = LineStarts(_source); // built once — RowIntersects indexes it, no per-row rescan
 
         // Re-raster every row that now intersects the selection (it gains/changes highlight) and every row
         // that last intersected it (it must clear). Row indices are stable across a same-shape reconcile, so
@@ -238,7 +239,7 @@ public sealed class TablePresenter : LeafBlockPresenter
 
         for (var i = 0; i < _rows.Count; i++)
         {
-            if (RowIntersects(i, now))
+            if (RowIntersects(i, now, lineStarts))
             {
                 _highlightedRows.Add(i);
                 _rows[i].InvalidateVisual();
@@ -253,42 +254,41 @@ public sealed class TablePresenter : LeafBlockPresenter
         }
     }
 
+    /// <summary>
+    /// Repopulate <see cref="_highlightedRows"/> from the current selection <b>without</b> re-rastering — the
+    /// caller (<see cref="RebuildChildren"/>) built fresh rows that already draw the current highlight. This
+    /// keeps the tracking set in sync so a later clear re-rasters the right rows even when the selection's
+    /// block-relative range is unchanged (the <c>DocumentCaret</c> was==now gate skips <see cref="InvalidateSelectionOverlay"/>
+    /// in that case, so a rebuild that cleared the set would otherwise leave a stale highlight uncleared).
+    /// </summary>
+    private void RetrackHighlightedRows()
+    {
+        var now = SelectionProvider?.Invoke();
+        var lineStarts = LineStarts(_source);
+        _highlightedRows.Clear();
+        for (var i = 0; i < _rows.Count; i++)
+            if (RowIntersects(i, now, lineStarts))
+                _highlightedRows.Add(i);
+    }
+
     /// <summary>Whether logical row <paramref name="row"/>'s source line overlaps the block-relative <paramref name="selection"/> range.</summary>
-    private bool RowIntersects(int row, (int Start, int End)? selection)
+    private bool RowIntersects(int row, (int Start, int End)? selection, int[] lineStarts)
     {
         if (selection is not { } sel || sel.End <= sel.Start)
             return false;
 
-        int lineStart = RowLineStart(row);
+        int lineStart = Math.Max(0, LineStartOf(lineStarts, _model.RowSourceLine(row)));
         int lineEnd = _model.RowTextEndOffset(row);
         return sel.Start < lineEnd && sel.End > lineStart;
     }
 
-    /// <summary>The block-relative offset row <paramref name="row"/>'s source line begins at (the position after the Nth newline, N = the model's line index for the row).</summary>
-    private int RowLineStart(int row)
-    {
-        int target = _model.RowSourceLine(row);
-        if (target <= 0)
-            return 0;
-
-        int seen = 0;
-        for (var i = 0; i < _source.Length; i++)
-        {
-            if (_source[i] == '\n' && ++seen == target)
-                return i + 1;
-        }
-
-        return 0;
-    }
-
     private void BuildChildren()
     {
+        // One shared forwarding delegate for every row (it re-reads the field dynamically) — no per-row closure.
+        Func<(int Start, int End)?> forward = () => SelectionProvider?.Invoke();
         for (var r = 0; r < _model.RowCount; r++)
         {
-            var row = new TableRowPresenter(_model, _metrics, _source, r)
-            {
-                SelectionProvider = () => SelectionProvider?.Invoke(),
-            };
+            var row = new TableRowPresenter(_model, _metrics, _source, r) { SelectionProvider = forward };
             _rows.Add(row);
             AddVisualChild(row);
         }
@@ -304,6 +304,7 @@ public sealed class TablePresenter : LeafBlockPresenter
         _highlightedRows.Clear(); // row indices are about to change — drop the stale highlight set
 
         BuildChildren();
+        RetrackHighlightedRows(); // re-sync the set to the fresh rows' highlight, so a later clear re-rasters them
         InvalidateMeasure();
     }
 

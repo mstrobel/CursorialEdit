@@ -182,3 +182,7 @@ built by the later table WPs — a half-fix now would be throwaway:
 - **#10 `WrapCell` duplicates `CaretNavigator.Wrap(CharacterWrap)` (→ cleanup).** The grapheme-boundary
   char-wrap already exists in the layout code; route through it to shrink the risk-a surface, once verified
   to produce identical fragments.
+
+## WP5 review deferrals (2026-07-05, commit after 0015662)
+- **TableRowPresenter reimplements LeafBlockPresenter's selection-draw seam** (finding 4). DrawCellText/ResolveSelection/CellSelection duplicate DrawSelectableText/DrawSelectedSpan/ResolveSelection — TableRowPresenter is a UIElement (not a LeafBlockPresenter), so it can't reach the protected members and copies them. Drift risk. → Reconcile in **WP8** (cell-rect selection reworks this draw path anyway); the right fix is to lift the shared grapheme prefix/selected/suffix split into a helper both can call.
+- **TablePresenter.LineStarts duplicates TableModel.LineStartOffsets** (finding 5). Verbatim, but cross-project (Presenters vs Document, LineStartOffsets is private static) — dedup needs a public/internal accessor or InternalsVisibleTo. Low value; revisit if a third copy appears.
