@@ -1,7 +1,10 @@
+using Cursorial.UI;
+
 using CursorialEdit.Document.Buffer;
 using CursorialEdit.Document.Editing;
 using CursorialEdit.Document.Model;
 using CursorialEdit.Layout;
+using CursorialEdit.Presenters;
 
 namespace CursorialEdit.Views;
 
@@ -1043,16 +1046,30 @@ internal sealed class DocumentCaret : ISelectionSource
             if (now != (0, 0))
             {
                 if (was != now)
-                    presenter.InvalidateVisual();
+                    InvalidateSelectionOverlay(presenter);
                 _selectionPainted[id] = now;
             }
             else if (was is not null)
             {
-                presenter.InvalidateVisual(); // the overlay cleared
+                InvalidateSelectionOverlay(presenter); // the overlay cleared
             }
         }
 
         Updated?.Invoke();
+    }
+
+    /// <summary>
+    /// Re-rasters a block's selection overlay: a <see cref="LeafBlockPresenter"/> routes through its
+    /// selection-overlay hook (so a table forwards to its per-row child boundaries, which draw the cells);
+    /// any other element re-rasters its own zone. Keeps the two-zone gate — a caret crossing a boundary
+    /// still re-rasters exactly the block(s) whose intersection changed.
+    /// </summary>
+    private static void InvalidateSelectionOverlay(UIElement presenter)
+    {
+        if (presenter is LeafBlockPresenter leaf)
+            leaf.InvalidateSelectionOverlay();
+        else
+            presenter.InvalidateVisual();
     }
 
     private static (int Start, int End) Intersect(int selStart, int selEnd, int blockStart, int blockEnd)

@@ -4,8 +4,10 @@ using Cursorial.Drawing.Media;
 using Cursorial.Output;
 using Cursorial.Rendering;
 using Cursorial.Rendering.Text;
+using Cursorial.Text;
 using Cursorial.UI;
 using Cursorial.UI.Controls;
+using Cursorial.UI.Themes;
 
 using CursorialEdit.Document.Model;
 using CursorialEdit.Layout;
@@ -35,6 +37,15 @@ internal sealed class TableRowPresenter : UIElement
     private TableVisualLine[] _lines;
     private string _signature;
 
+    /// <summary>
+    /// The document selection range this row highlights (M3.WP4-deferred #2): a delegate the owning
+    /// <see cref="TablePresenter"/> forwards from its own <c>SelectionProvider</c>, returning the live
+    /// block-relative source range. Read at draw time and intersected with each cell fragment's source
+    /// span so a range selection inside a cell paints — like every other presenter — instead of being
+    /// invisible. Full cell-rect (rectangular) selection is still WP8.
+    /// </summary>
+    internal Func<(int Start, int End)?>? SelectionProvider { get; set; }
+
     public TableRowPresenter(TableModel model, TableGridMetrics metrics, string blockText, int logicalRow)
     {
         _model = model;
@@ -52,6 +63,14 @@ internal sealed class TableRowPresenter : UIElement
     /// <summary>Number of <see cref="Render"/> calls — the per-row raster observable the R3 benchmark diffs against.</summary>
     public int RenderCount { get; private set; }
 
+    /// <summary>
+    /// Number of <see cref="Refresh"/> re-derivations (LayoutRow + run-map + signature rebuild) this row has
+    /// run — the WP5 "skip unchanged rows" observable (spike-review deferred #7). Before WP5 every reconcile
+    /// re-derived every row; now only a row whose source or column geometry moved re-derives, so a
+    /// stable-geometry keystroke advances this on exactly the edited row.
+    /// </summary>
+    public int DeriveCount { get; private set; }
+
     /// <summary>The row's visual lines (run maps per visual row) — test observability for the border/cell assertions.</summary>
     internal IReadOnlyList<TableVisualLine> VisualLines => _lines;
 
@@ -67,6 +86,7 @@ internal sealed class TableRowPresenter : UIElement
         _model = model;
         _metrics = metrics;
         _blockText = blockText;
+        DeriveCount++;
 
         int oldHeight = _lines.Length;
         _lines = BuildLines(out string signature);
@@ -75,6 +95,34 @@ internal sealed class TableRowPresenter : UIElement
         _signature = signature;
 
         return (heightChanged, contentChanged);
+    }
+
+    /// <summary>
+    /// Re-binds an <b>unchanged</b> row to the post-reconcile model/source without re-deriving it (the WP5
+    /// skip path). The row's rendered content is identical, so its wrapped layout, run map and signature are
+    /// reused as-is; only its block-relative cell offsets are shifted by <paramref name="offsetDelta"/> — an
+    /// intra-cell edit on an <i>earlier</i> row moves every later row's source offsets by the splice delta,
+    /// and those offsets must stay current so a selection (resolved against the live document range) lands on
+    /// the right cells. O(runs), no LayoutRow / wrap / signature rebuild, and not counted as a re-derive.
+    /// </summary>
+    public void Rebind(TableModel model, TableGridMetrics metrics, string blockText, int offsetDelta)
+    {
+        _model = model;
+        _metrics = metrics;
+        _blockText = blockText;
+
+        if (offsetDelta == 0)
+            return;
+
+        foreach (var line in _lines)
+        {
+            for (var i = 0; i < line.Runs.Length; i++)
+            {
+                var run = line.Runs[i];
+                if (run.SrcLen > 0) // only source-mapped cell runs; synthetic borders carry no source
+                    line.Runs[i] = run with { SrcStart = run.SrcStart + offsetDelta };
+            }
+        }
     }
 
     /// <inheritdoc/>
@@ -92,6 +140,7 @@ internal sealed class TableRowPresenter : UIElement
         var borderBrush = MarkdownStyles.RuleBrush(this);
         var headerFill = MarkdownStyles.CodeFillBrush(this);
         var headerStyle = CellStyle.Default.WithAttributes(TextAttributes.Bold);
+        var selection = ResolveSelection(context);
 
         for (var row = 0; row < _lines.Length; row++)
         {
@@ -104,6 +153,7 @@ internal sealed class TableRowPresenter : UIElement
             {
                 if (run.Kind == RunKind.Synthetic)
                 {
+                    // Border/divider glyphs (│ ┼ ─ …) are structure, never selectable content — draw plain.
                     if (run.Glyph is { Length: > 0 } glyph)
                         context.DrawText(run.Col, row, glyph, borderBrush, null, CellStyle.Default);
                     continue;
@@ -117,9 +167,94 @@ internal sealed class TableRowPresenter : UIElement
                     continue;
 
                 var style = line.IsHeader ? headerStyle : CellStyle.Default;
-                context.DrawText(run.Col, row, slice, foreground, null, style);
+                DrawCellText(context, run.Col, row, slice, run.SrcStart, foreground, style, selection);
             }
         }
+    }
+
+    // ───────────────────────────── selection highlight (WP4-deferred #2) ─────────────────────────────
+
+    /// <summary>
+    /// The document selection resolved for this Render pass: the block-relative range (from
+    /// <see cref="SelectionProvider"/>), the NoColor tier flag (highlight rides <see cref="TextAttributes.Inverse"/>
+    /// there, a background scrim degrading to nothing), and the color-tier fill brush
+    /// (<see cref="ThemeKeys.SelectionBrush"/>). Resolved once so the per-fragment path is field reads, mirroring
+    /// <see cref="LeafBlockPresenter"/>'s seam.
+    /// </summary>
+    private CellSelection ResolveSelection(RenderContext context)
+    {
+        if (SelectionProvider?.Invoke() is not { } range || range.End <= range.Start)
+            return default;
+
+        if (context.Capabilities.Color.Depth == ColorDepth.NoColor)
+            return new CellSelection(range.Start, range.End, NoColor: true, Brush: null);
+
+        if (this.TryFindResource(ThemeKeys.SelectionBrush, out var value) && value is IBrush brush)
+            return new CellSelection(range.Start, range.End, NoColor: false, brush);
+
+        return default;
+    }
+
+    /// <summary>
+    /// Draws one cell fragment's <paramref name="text"/> at cell (<paramref name="x"/>, <paramref name="row"/>)
+    /// with the document <paramref name="selection"/> composed into the sub-span it covers — the block-relative
+    /// selection is intersected with the fragment's source span <c>[srcStart, srcStart + len)</c> and the covered
+    /// sub-span is drawn with the selection fill (or <see cref="TextAttributes.Inverse"/> on NoColor). Splits land
+    /// on grapheme boundaries (a wide cluster is highlighted whole), so a selected CJK/emoji cell paints cleanly.
+    /// When nothing on the fragment is selected this is one ordinary <c>DrawText</c>.
+    /// </summary>
+    private void DrawCellText(
+        RenderContext context, int x, int row, ReadOnlySpan<char> text, int srcStart,
+        IBrush foreground, CellStyle style, in CellSelection selection)
+    {
+        int relFrom = selection.Start - srcStart;
+        int relTo = selection.End - srcStart;
+        if (!selection.Active || relTo <= 0 || relFrom >= text.Length)
+        {
+            context.DrawText(x, row, text, foreground, null, style);
+            return;
+        }
+
+        relFrom = Math.Max(0, relFrom);
+        relTo = Math.Min(text.Length, relTo);
+
+        // Walk grapheme clusters, marking the drawn cell where the selected UTF-16 sub-range begins/ends —
+        // boundaries are cluster-aligned, so a wide cluster straddling an edge is taken whole into the selection.
+        int cell = x, index = 0;
+        int prefixEnd = -1, selEnd = -1, selStartCell = x, selEndCell = x;
+        var clusters = text.GetGraphemeEnumerator();
+        while (clusters.MoveNext())
+        {
+            if (prefixEnd < 0 && index >= relFrom) { prefixEnd = index; selStartCell = cell; }
+            if (selEnd < 0 && index >= relTo) { selEnd = index; selEndCell = cell; }
+            cell += GraphemeWidth.StringWidth(clusters.Current);
+            index += clusters.Current.Length;
+        }
+
+        if (prefixEnd < 0) { prefixEnd = text.Length; selStartCell = cell; }
+        if (selEnd < 0) { selEnd = text.Length; selEndCell = cell; }
+
+        if (prefixEnd > 0)
+            context.DrawText(x, row, text[..prefixEnd], foreground, null, style);
+
+        if (selEnd > prefixEnd)
+        {
+            var selected = text[prefixEnd..selEnd];
+            if (selection.NoColor)
+                context.DrawText(selStartCell, row, selected, foreground, null, style.AddAttributes(TextAttributes.Inverse));
+            else
+                context.DrawText(selStartCell, row, selected, foreground, selection.Brush, style);
+        }
+
+        if (selEnd < text.Length)
+            context.DrawText(selEndCell, row, text[selEnd..], foreground, null, style);
+    }
+
+    /// <summary>The resolved per-pass selection state (block-relative range + tier decoration) the fragment draw reads.</summary>
+    private readonly record struct CellSelection(int Start, int End, bool NoColor, IBrush? Brush)
+    {
+        /// <summary>Whether a selection is active this pass (the default is "nothing selected").</summary>
+        public bool Active => End > Start;
     }
 
     // ───────────────────────────── visual-line (run-map) construction ─────────────────────────────

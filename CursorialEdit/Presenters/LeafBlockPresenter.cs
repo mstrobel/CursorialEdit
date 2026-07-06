@@ -188,6 +188,15 @@ public abstract class LeafBlockPresenter : UIElement
     internal Func<(int Start, int End)?>? SelectionProvider { get; set; }
 
     /// <summary>
+    /// Re-rasters this presenter's on-screen selection overlay after the document selection changed (the
+    /// caret's per-block invalidation route). The default re-rasters the presenter's own zone — correct for
+    /// every presenter that paints its own rows. A presenter whose visible content lives in child render
+    /// boundaries (the <see cref="TablePresenter"/>, whose rows draw and highlight the cells) overrides this
+    /// to forward the invalidation to those children, since its own zone paints nothing.
+    /// </summary>
+    internal virtual void InvalidateSelectionOverlay() => InvalidateVisual();
+
+    /// <summary>
     /// The block's rendered height in terminal rows at <paramref name="width"/> cells — the height the
     /// WP7b bridge feeds the panel's prefix sums so slot heights match what this presenter draws (the
     /// inactive, reveal-invariant row count, folded for front matter). Public projection of

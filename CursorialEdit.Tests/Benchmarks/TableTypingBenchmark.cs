@@ -70,10 +70,12 @@ public sealed class TableTypingBenchmark(ITestOutputHelper output)
 
         var samples = new double[MeasuredKeystrokes];
         int worstRowRasters = 0;
+        int worstRowDerives = 0;
 
         for (var i = 0; i < MeasuredKeystrokes; i++)
         {
-            var before = SnapshotRowRasters(presenter);
+            var beforeRasters = SnapshotRowRasters(presenter);
+            var beforeDerives = SnapshotRowDerives(presenter);
 
             var start = Stopwatch.GetTimestamp();
             ApplyCellInsert(harness);
@@ -91,7 +93,8 @@ public sealed class TableTypingBenchmark(ITestOutputHelper output)
                 harness.Host.RunUntilIdle(maxFrames: 0),
                 $"keystroke {i} ({preset}) did not settle within {MaxFramesPerKeystroke} frames");
 
-            worstRowRasters = Math.Max(worstRowRasters, RowRasterDelta(presenter, before));
+            worstRowRasters = Math.Max(worstRowRasters, RowRasterDelta(presenter, beforeRasters));
+            worstRowDerives = Math.Max(worstRowDerives, RowDeriveDelta(presenter, beforeDerives));
         }
 
         Array.Sort(samples);
@@ -101,12 +104,18 @@ public sealed class TableTypingBenchmark(ITestOutputHelper output)
 
         output.WriteLine(
             $"table typing ({preset}): N={MeasuredKeystrokes} keystroke→frame p50 {p50:F2} ms, p90 {p90:F2} ms, " +
-            $"max {max:F2} ms (budgets {TypicalBudgetMs:F0}/{HardCeilingMs:F0} ms); worst row-zone re-rasters/keystroke {worstRowRasters}");
+            $"max {max:F2} ms (budgets {TypicalBudgetMs:F0}/{HardCeilingMs:F0} ms); worst row-zone re-rasters/keystroke " +
+            $"{worstRowRasters}; worst row re-derives/keystroke {worstRowDerives}");
 
         // The per-row boundary economy: a STABLE-GEOMETRY cell edit re-rasters EXACTLY the edited row's zone
         // (when it wraps, that one row grows taller but is still one zone; siblings only composite-shift). This
         // is the guarantee the milestone exists to lock in — asserted at the committed 1, not a loose bound.
         Assert.Equal(1, worstRowRasters);
+
+        // WP5 (spike-review deferred #7): a stable-geometry edit now RE-DERIVES (LayoutRow + run-map +
+        // signature rebuild) exactly the edited row too — before WP5 the reconcile re-derived all N rows each
+        // keystroke (only the raster was 1-zone). This is the CPU economy the milestone adds on top of R3.
+        Assert.Equal(1, worstRowDerives);
 
         Assert.True(p50 < TypicalBudgetMs, $"table typing p50 over budget ({preset}): {p50:F2} ms (budget {TypicalBudgetMs:F0} ms; p90 {p90:F2}, max {max:F2}).");
         Assert.True(p90 < HardCeilingMs, $"table typing p90 over the hard ceiling ({preset}): {p90:F2} ms (ceiling {HardCeilingMs:F0} ms; p50 {p50:F2}, max {max:F2}).");
@@ -134,16 +143,22 @@ public sealed class TableTypingBenchmark(ITestOutputHelper output)
 
         var samples = new double[growthKeystrokes];
         int worstRowRasters = 0;
+        int rasterOnStableKeystroke = int.MaxValue; // the fewest rows re-rastered on any keystroke this run
         for (var i = 0; i < growthKeystrokes; i++)
         {
             var before = SnapshotRowRasters(presenter);
+            int widthBefore = presenter.GridWidth;
             var start = Stopwatch.GetTimestamp();
             ApplyCellInsert(harness);
             var frames = 0;
             do { harness.Host.RunFrame(); frames++; }
             while (!harness.Host.RunUntilIdle(maxFrames: 0) && frames < MaxFramesPerKeystroke);
             samples[i] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-            worstRowRasters = Math.Max(worstRowRasters, RowRasterDelta(presenter, before));
+
+            int rasters = RowRasterDelta(presenter, before);
+            worstRowRasters = Math.Max(worstRowRasters, rasters);
+            if (presenter.GridWidth == widthBefore) // a keystroke that did NOT widen the column (stable geometry)
+                rasterOnStableKeystroke = Math.Min(rasterOnStableKeystroke, rasters);
         }
 
         Array.Sort(samples);
@@ -152,7 +167,18 @@ public sealed class TableTypingBenchmark(ITestOutputHelper output)
         double max = samples[^1];
         output.WriteLine(
             $"table GROWING-column typing ({preset}): N={growthKeystrokes} p50 {p50:F2} ms, p90 {p90:F2} ms, " +
-            $"max {max:F2} ms; worst row-zone re-rasters/keystroke {worstRowRasters} (full-table = the WP5 target)");
+            $"max {max:F2} ms; worst row-zone re-rasters/keystroke {worstRowRasters}; " +
+            $"re-rasters on a stable (non-widening) keystroke {(rasterOnStableKeystroke == int.MaxValue ? -1 : rasterOnStableKeystroke)}");
+
+        // The reflow is column-width-diffed (WP5): a keystroke that does NOT change the column width re-rasters
+        // exactly the edited row (1), the same economy the pinned-geometry case gets. A keystroke that DOES
+        // widen the column re-rasters every row — the divider band shifts, so each row re-lands its borders and
+        // the framework re-rasters a boundary whose arranged width changed (RenderTree size-change path). That
+        // is correct and bounded to the table; it is not reducible below N with per-row boundaries + shared
+        // columns, which the 40×20 stable benchmark above is the one that locks at 1.
+        if (rasterOnStableKeystroke != int.MaxValue)
+            Assert.Equal(1, rasterOnStableKeystroke);
+        Assert.True(worstRowRasters <= presenter.Rows.Count, "a width change never re-rasters beyond the table's own rows");
 
         // R3 for the growing case: this is the heavier, WP5-optimizable path (naive full-table re-raster,
         // no incremental reflow yet), so it is gated on the HARD ceiling (p90 < 50 ms) — the sustained worst
@@ -209,6 +235,26 @@ public sealed class TableTypingBenchmark(ITestOutputHelper output)
         for (var i = 0; i < presenter.Rows.Count && i < before.Length; i++)
         {
             if (presenter.Rows[i].RenderCount > before[i])
+                changed++;
+        }
+
+        return changed;
+    }
+
+    private static int[] SnapshotRowDerives(TablePresenter presenter)
+    {
+        var counts = new int[presenter.Rows.Count];
+        for (var i = 0; i < counts.Length; i++)
+            counts[i] = presenter.Rows[i].DeriveCount;
+        return counts;
+    }
+
+    private static int RowDeriveDelta(TablePresenter presenter, int[] before)
+    {
+        int changed = 0;
+        for (var i = 0; i < presenter.Rows.Count && i < before.Length; i++)
+        {
+            if (presenter.Rows[i].DeriveCount > before[i])
                 changed++;
         }
 
