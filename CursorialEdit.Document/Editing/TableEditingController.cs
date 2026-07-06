@@ -236,19 +236,9 @@ public sealed class TableEditingController
     }
 
     private TableCommand AppendRow(TableModel model, int blockStart)
-    {
-        int end = blockStart + model.RowTextEndOffset(model.RowCount - 1);
-        var at = _buffer.GetPosition(end); // valid: the end of the last row's text (before its terminator)
-
-        var row = new StringBuilder("\n|");
-        for (var c = 0; c < model.ColumnCount; c++)
-            row.Append("   |");
-
-        // The appended row becomes the next line; its first cell's opening pipe is at col 0, so the caret
-        // lands just inside it (col 1). Computed arithmetically — the inserted text is not in the buffer yet.
-        var target = new TextPosition(at.Line + 1, 1);
-        return TableCommand.Splice(new Edit(at, string.Empty, row.ToString()), EditKind.Structural, target, seal: true);
-    }
+        // Grow the table below its last row — the same empty-row insert the structural ops use, so the row
+        // shape and the document's line-ending convention are honoured in one place (was a hardcoded "\n").
+        => InsertRowAt(AbsLineOfRow(model, blockStart, model.RowCount - 1) + 1, BuildEmptyRow(model.ColumnCount), TableEndingText(model, blockStart));
 
     // ───────────────────────────── cell commands ─────────────────────────────
 
@@ -306,7 +296,7 @@ public sealed class TableEditingController
                 ? blockLine + model.RowSourceLine(cell.Row) + 1
                 : blockLine + model.RowSourceLine(cell.Row);
 
-        return InsertRowAt(insertLineAbs, BuildEmptyRow(model.ColumnCount));
+        return InsertRowAt(insertLineAbs, BuildEmptyRow(model.ColumnCount), TableEndingText(model, blockStart));
     }
 
     /// <summary>Inserts an empty column left (<paramref name="right"/> = false) or right of the caret's column into EVERY row (header, delimiter, body); the new column's delimiter marker defaults to <c>---</c> (renders left). Caret → the new column's cell in the current row.</summary>
@@ -433,10 +423,17 @@ public sealed class TableEditingController
         var top = _buffer.GetLine(topAbs);
         var bottom = _buffer.GetLine(bottomAbs);
 
+        // Reorder the two full lines, carrying each row's OWN terminator with its text (byte-exact under CRLF /
+        // mixed endings — a positional swap would give a row its neighbour's ending). The one exception is when
+        // the bottom line is the buffer's last line (no terminator): promoting it above means the two rows share
+        // the single interior terminator (the top row's) and the row that ends up last stays unterminated.
         int start = LineStart(topAbs);
-        int end = LineStart(bottomAbs) + bottom.Text.Length; // up to (not including) the bottom line's terminator
+        int end = LineStart(bottomAbs) + bottom.TotalLength; // both full lines (the bottom line's terminator included)
         string removed = _buffer.GetTextAtOffset(start, end - start);
-        string inserted = bottom.Text + top.EndingText + top.Text; // swap the two line texts; keep the interior terminator
+        bool bottomTerminated = bottom.EndingLength > 0;
+        string firstEnding = bottomTerminated ? bottom.EndingText : top.EndingText;   // separates the two rows after the swap
+        string secondEnding = bottomTerminated ? top.EndingText : bottom.EndingText;  // the region's trailing ending ("" if last)
+        string inserted = bottom.Text + firstEnding + top.Text + secondEnding;
 
         // The moved row's text is unchanged (only relocated by one line), so the caret keeps its column and shifts one line.
         var target = new TextPosition(down ? caret.Line + 1 : caret.Line - 1, caret.Col);
@@ -504,7 +501,10 @@ public sealed class TableEditingController
         string removed = _buffer.GetTextAtOffset(removeStart, removeEnd - removeStart);
 
         // Land where the table was: the line now at the table's old top position, clamped into the shrunken buffer.
-        int newLineCount = _buffer.LineCount - CountNewlines(removed);
+        // The removed physical lines are headerAbs..lastAbs; each contributes a terminator except a terminator-less
+        // last buffer line, so the surviving line count follows from the span without rescanning `removed`.
+        int removedTerminators = (lastAbs - headerAbs) + (_buffer.GetLine(lastAbs).EndingLength > 0 ? 1 : 0);
+        int newLineCount = _buffer.LineCount - removedTerminators;
         var target = new TextPosition(Math.Min(headerAbs, Math.Max(0, newLineCount - 1)), 0);
         return TableCommand.Splice(new Edit(_buffer.GetPosition(removeStart), removed, string.Empty), EditKind.Structural, target, seal: true);
     }
@@ -519,10 +519,20 @@ public sealed class TableEditingController
         var delimiter = _buffer.GetLine(headerAbs + 1);
         var firstBody = _buffer.GetLine(headerAbs + 2);
 
+        // Remove all three full lines and rebuild as two, carrying each SURVIVING line's own terminator so an
+        // untouched delimiter (or the promoted row) is never rewritten to its neighbour's ending (byte-exact
+        // under CRLF / mixed endings). The old header's terminator simply vanishes with the header.
         int removeStart = LineStart(headerAbs);
-        int removeEnd = LineStart(headerAbs + 2) + firstBody.Text.Length; // up to (not including) row 1's terminator
-        string removed = _buffer.GetTextAtOffset(removeStart, removeEnd - removeStart); // header + delim + row-1 text
-        string inserted = firstBody.Text + header.EndingText + delimiter.Text; // row 1 becomes header; delimiter follows
+        int removeEnd = LineStart(headerAbs + 2) + firstBody.TotalLength; // all three full lines
+        string removed = _buffer.GetTextAtOffset(removeStart, removeEnd - removeStart);
+
+        // The promoted row keeps its own terminator before the delimiter; if it was the buffer's last line (no
+        // terminator) a real separator is needed, so the deleted header's ending is reused. The delimiter keeps
+        // its own terminator, except it becomes the (unterminated) last line when the promoted row was last.
+        bool promotedTerminated = firstBody.EndingLength > 0;
+        string headerEnding = promotedTerminated ? firstBody.EndingText : header.EndingText;
+        string delimiterEnding = promotedTerminated ? delimiter.EndingText : firstBody.EndingText;
+        string inserted = firstBody.Text + headerEnding + delimiter.Text + delimiterEnding;
 
         // Row 1's text is unchanged but rises by two physical lines (past the removed header and delimiter gap).
         var entry = _buffer.GetPosition(blockStart + model.CellEntryOffset(1, column));
@@ -562,22 +572,36 @@ public sealed class TableEditingController
         return TableCommand.Splice(new Edit(_buffer.GetPosition(removeStart), removed, sb.ToString()), EditKind.Structural, target, seal: true);
     }
 
-    /// <summary>Splices <paramref name="newRow"/> in as a fresh physical line at absolute line <paramref name="insertLineAbs"/> (appending past the last line when needed). Caret → the new row's first cell.</summary>
-    private TableCommand InsertRowAt(int insertLineAbs, string newRow)
+    /// <summary>
+    /// Splices <paramref name="newRow"/> in as a fresh physical line at absolute line <paramref name="insertLineAbs"/>
+    /// (appending past the last line when needed). The new row's terminator honours the document's line-ending
+    /// convention — the line just above the insertion (a table row, always terminated) for an interior insert, else
+    /// <paramref name="prevailingEnding"/> — so inserting a row never rewrites a CRLF document to a lone LF.
+    /// Caret → the new row's first cell.
+    /// </summary>
+    private TableCommand InsertRowAt(int insertLineAbs, string newRow, string prevailingEnding)
     {
         if (insertLineAbs < _buffer.LineCount)
         {
+            // The line above is a table row whose ending is the local convention; it is never the last buffer line
+            // here (insertLineAbs < LineCount), so its ending is a real terminator.
+            string ending = insertLineAbs > 0 ? _buffer.GetLine(insertLineAbs - 1).EndingText : prevailingEnding;
             var editStart = new TextPosition(insertLineAbs, 0);
             var target = new TextPosition(insertLineAbs, 1); // just inside the new row's leading pipe (its first cell)
-            return TableCommand.Splice(new Edit(editStart, string.Empty, newRow + "\n"), EditKind.Structural, target, seal: true);
+            return TableCommand.Splice(new Edit(editStart, string.Empty, newRow + ending), EditKind.Structural, target, seal: true);
         }
 
+        // Appending past the last line: the current last line has no terminator of its own, so the new row is
+        // separated with the table's prevailing ending and itself becomes the (unterminated) last line.
         int lastLine = _buffer.LineCount - 1;
         var last = _buffer.GetLine(lastLine);
         var appendAt = new TextPosition(lastLine, last.Text.Length);
         var appendTarget = new TextPosition(lastLine + 1, 1);
-        return TableCommand.Splice(new Edit(appendAt, string.Empty, "\n" + newRow), EditKind.Structural, appendTarget, seal: true);
+        return TableCommand.Splice(new Edit(appendAt, string.Empty, prevailingEnding + newRow), EditKind.Structural, appendTarget, seal: true);
     }
+
+    /// <summary>The table's prevailing line-ending text — taken from the header row, which is always terminated (the delimiter follows it).</summary>
+    private string TableEndingText(TableModel model, int blockStart) => _buffer.GetLine(AbsLineOfRow(model, blockStart, 0)).EndingText;
 
     private int BlockLine(int blockStart) => _buffer.GetPosition(blockStart).Line;
 
@@ -635,18 +659,6 @@ public sealed class TableEditingController
         for (var j = 0; j < targetColumn; j++)
             column += 1 + cells[j].Length + 2; // " " + content + " |"
         return column + (cells[targetColumn].Length > 0 ? 1 : 0);
-    }
-
-    private static int CountNewlines(string text)
-    {
-        int count = 0;
-        foreach (char c in text)
-        {
-            if (c == '\n')
-                count++;
-        }
-
-        return count;
     }
 
     // ───────────────────────────── text hygiene ─────────────────────────────

@@ -426,6 +426,100 @@ public sealed class TableStructuralTests
         AssertOneUndoRestores(h, beforeText, beforeCaret);
     }
 
+    // ───────────────────────────── line-ending fidelity (CRLF / mixed) ─────────────────────────────
+    //
+    // A structural op is a source splice; it must NEVER rewrite an untouched line's terminator (the editor's
+    // byte-fidelity / "never lose the user's work" guarantee). Each line's terminator travels WITH its text.
+    // These assert the whole buffer byte-exact, which captures every terminator.
+
+    [Fact]
+    public void InsertRow_InCrlfTable_UsesCrlfTerminator()
+    {
+        using var h = MarkdownEditingHarness.Create("| A | B |\r\n|---|---|\r\n| 1 | 2 |\r\n", columns: 40, rows: 14);
+        EnterCell(h, 1, 0);
+
+        h.Caret.TableInsertRowBelow();
+
+        Assert.Equal("| A | B |\r\n|---|---|\r\n| 1 | 2 |\r\n|  |  |\r\n", h.Buffer.GetText()); // new row is CRLF, not a lone LF
+        Assert.Equal(LineEnding.CrLf, h.Buffer.GetLine(3).Ending);
+    }
+
+    [Fact]
+    public void TabAppendRow_InCrlfTable_UsesCrlfTerminator()
+    {
+        using var h = MarkdownEditingHarness.Create("| A | B |\r\n|---|---|\r\n| 1 | 2 |\r\n", columns: 40, rows: 14);
+        EnterCell(h, 1, 1); // last cell of the last row
+
+        h.Key(Key.Tab); // grow the table (AppendRow shares the row-insert path)
+
+        Assert.Equal("| A | B |\r\n|---|---|\r\n| 1 | 2 |\r\n|  |  |\r\n", h.Buffer.GetText());
+    }
+
+    [Fact]
+    public void DeleteRow_InCrlfTable_KeepsSurroundingTerminators()
+    {
+        using var h = MarkdownEditingHarness.Create("| A | B |\r\n|---|---|\r\n| 1 | 2 |\r\n| 3 | 4 |\r\n", columns: 40, rows: 16);
+        EnterCell(h, 1, 0);
+
+        h.Caret.TableDeleteRow();
+
+        Assert.Equal("| A | B |\r\n|---|---|\r\n| 3 | 4 |\r\n", h.Buffer.GetText());
+    }
+
+    [Fact]
+    public void InsertColumn_InCrlfTable_PreservesEveryTerminator()
+    {
+        using var h = MarkdownEditingHarness.Create("| A | B |\r\n|---|---|\r\n| 1 | 2 |\r\n", columns: 40, rows: 14);
+        EnterCell(h, 0, 0);
+
+        h.Caret.TableInsertColumnRight(); // exercises the whole-table RebuildTable splice
+
+        Assert.Equal("| A |  | B |\r\n| --- | --- | --- |\r\n| 1 |  | 2 |\r\n", h.Buffer.GetText());
+    }
+
+    [Fact]
+    public void MoveRow_InMixedEndingTable_CarriesEachRowsOwnTerminator()
+    {
+        // Body row 1 ends LF, body row 2 ends CRLF — a positional terminator swap would give each row the other's
+        // ending. The fix must keep each row's OWN terminator with its text.
+        using var h = MarkdownEditingHarness.Create("| A | B |\r\n|---|---|\r\n| 1 | 2 |\n| 3 | 4 |\r\n", columns: 40, rows: 16);
+        EnterCell(h, 1, 0); // "| 1 | 2 |" (LF)
+
+        h.Caret.TableMoveRowDown();
+
+        // "3 4" (its own CRLF) now on top, "1 2" (its own LF) below — each kept its terminator.
+        Assert.Equal("| A | B |\r\n|---|---|\r\n| 3 | 4 |\r\n| 1 | 2 |\n", h.Buffer.GetText());
+        Assert.Equal((2, 0), Cell(h)); // caret followed the moved row
+    }
+
+    [Fact]
+    public void PromoteHeader_InMixedEndingTable_KeepsDelimiterTerminator()
+    {
+        // The delimiter ends CRLF, the promoted body row ends LF — the delimiter is untouched and must keep its
+        // own CRLF (a naive rebuild made it inherit the promoted row's LF).
+        using var h = MarkdownEditingHarness.Create("| A | B |\r\n|---|---|\r\n| 1 | 2 |\n| 3 | 4 |\r\n", columns: 40, rows: 16);
+        EnterCell(h, 0, 0); // header
+
+        h.Caret.TableDeleteRow(); // promotes "| 1 | 2 |" to header
+
+        // new header keeps its LF, delimiter keeps its CRLF, body keeps its CRLF.
+        Assert.Equal("| 1 | 2 |\n|---|---|\r\n| 3 | 4 |\r\n", h.Buffer.GetText());
+    }
+
+    [Fact]
+    public void MoveRow_WhenBottomRowIsUnterminatedLastLine_StaysValid()
+    {
+        // The lower row is the buffer's last line (no terminator) — the swap must keep the pair valid and leave
+        // the row that ends up last unterminated.
+        using var h = MarkdownEditingHarness.Create("| A | B |\r\n|---|---|\r\n| 1 | 2 |\r\n| 3 | 4 |", columns: 40, rows: 16);
+        EnterCell(h, 1, 0);
+
+        h.Caret.TableMoveRowDown();
+
+        Assert.Equal("| A | B |\r\n|---|---|\r\n| 3 | 4 |\r\n| 1 | 2 |", h.Buffer.GetText());
+        Assert.Equal(3, Model(h).RowCount);
+    }
+
     // ───────────────────────────── helpers ─────────────────────────────
 
     private static string Line(MarkdownEditingHarness h, int line) => h.Buffer.GetLine(line).Text;
