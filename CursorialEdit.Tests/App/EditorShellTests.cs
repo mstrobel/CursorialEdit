@@ -43,7 +43,7 @@ public sealed class EditorShellTests
 
     [Theory]
     [MemberData(nameof(Presets))]
-    public void Shell_EditorIsTemplated_AndFillsEveryRowAboveTheStatusLine(string preset)
+    public void Shell_EditorIsTemplated_AndFillsBetweenTheRibbonAndTheStatusLine(string preset)
     {
         using var host = CreateHost(preset);
         var shell = new EditorShell();
@@ -55,13 +55,16 @@ public sealed class EditorShellTests
         Assert.NotNull(shell.Editor.ScrollViewerPart);
         Assert.NotNull(shell.Editor.DocumentPanelPart);
 
-        // … and its viewport spans everything except the one status row.
-        Assert.Equal(Rows - 1, shell.Editor.ScrollViewerPart!.Viewport.Rows);
+        // … and its viewport fills the region BETWEEN the M5 ribbon (docked top) and the one status row: the
+        // ribbon occupies EditorTop rows, and editor-top + viewport meets the status line at Rows - 1.
+        int editorTop = TestSupport.ShellLayout.EditorTopRow(shell);
+        Assert.True(editorTop > 0, "the ribbon occupies rows above the editor");
+        Assert.Equal(Rows - 1, editorTop + shell.Editor.ScrollViewerPart!.Viewport.Rows);
         Assert.Equal(Columns, shell.Editor.ScrollViewerPart.Viewport.Columns);
 
-        // No height source is wired until WP7 — the editor renders an empty surface.
+        // No height source is wired until WP7 — the editor region (below the ribbon, above the status) is empty.
         Assert.Null(shell.Editor.HeightSource);
-        for (var row = 0; row < Rows - 1; row++)
+        for (var row = editorTop; row < Rows - 1; row++)
             Assert.True(
                 string.IsNullOrWhiteSpace(host.GetRowText(row)),
                 $"editor row {row} should be empty before WP7 wires a height source");

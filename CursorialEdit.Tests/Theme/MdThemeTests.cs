@@ -48,7 +48,10 @@ public sealed class MdThemeTests
 
     private sealed record ShellFixture(UITestHost Host, EditorShell Shell) : IDisposable
     {
-        public Color HeadingForeground(int row) => Host.GetCell(0, row).Style.Foreground;
+        // The M5 ribbon docks at the shell's top, so document content starts EditorTop frame rows down.
+        public int EditorTop => TestSupport.ShellLayout.EditorTopRow(Shell);
+        public string Row(int row) => Host.GetRowText(row + EditorTop).TrimEnd();
+        public Color HeadingForeground(int row) => Host.GetCell(0, row + EditorTop).Style.Foreground;
         public void Dispose() => Host.Dispose();
     }
 
@@ -85,7 +88,7 @@ public sealed class MdThemeTests
         // token indirection changed nothing.
         using var fixture = ShowHeadingDoc();
 
-        Assert.Equal("Section", fixture.Host.GetRowText(2).TrimEnd());
+        Assert.Equal("Section", fixture.Row(2));
         Assert.Equal(Colors.LightCyan, fixture.HeadingForeground(2)); // H2 default
     }
 
@@ -99,7 +102,7 @@ public sealed class MdThemeTests
 
         // The FW-A override (theme.md.heading.2) is applied above UIApplication.Theme, so the H2 renders
         // in the overridden color instead of the authored LightCyan.
-        Assert.Equal("Section", fixture.Host.GetRowText(2).TrimEnd());
+        Assert.Equal("Section", fixture.Row(2));
         Assert.Equal(Colors.LightRed, fixture.HeadingForeground(2));
     }
 

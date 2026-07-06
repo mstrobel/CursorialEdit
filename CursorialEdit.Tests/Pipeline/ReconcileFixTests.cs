@@ -32,7 +32,9 @@ public sealed class ReconcileFixTests
 
     private sealed record ShellFixture(UITestHost Host, EditorShell Shell) : IDisposable
     {
-        public string Row(int row) => Host.GetRowText(row).TrimEnd();
+        // The M5 ribbon docks at the shell's top, so the document content starts EditorTop frame rows down.
+        public int EditorTop => TestSupport.ShellLayout.EditorTopRow(Shell);
+        public string Row(int row) => Host.GetRowText(row + EditorTop).TrimEnd();
         public void Dispose() => Host.Dispose();
     }
 
@@ -42,7 +44,7 @@ public sealed class ReconcileFixTests
         // Heading is on line 2 (inactive — caret sits on line 0), so it renders formatted at its level color.
         using var h = CreateShell("intro\n\n## Section");
         Assert.Equal("Section", h.Row(2));
-        Assert.Equal(Colors.LightCyan, h.Host.GetCell(0, 2).Style.Foreground); // H2
+        Assert.Equal(Colors.LightCyan, h.Host.GetCell(0, 2 + h.EditorTop).Style.Foreground); // H2
 
         // Insert a "#" at the heading's start → "### Section" (same block id, reported Changed), caret stays
         // on line 0 so the heading remains inactive/formatted.
@@ -53,7 +55,7 @@ public sealed class ReconcileFixTests
         Assert.True(h.Host.RunUntilIdle());
 
         Assert.Equal("Section", h.Row(2));
-        Assert.Equal(Colors.LightGreen, h.Host.GetCell(0, 2).Style.Foreground); // H3, not the stale H2 LightCyan
+        Assert.Equal(Colors.LightGreen, h.Host.GetCell(0, 2 + h.EditorTop).Style.Foreground); // H3, not the stale H2 LightCyan
     }
 
     [Fact]
@@ -68,9 +70,10 @@ public sealed class ReconcileFixTests
         h.Host.SendKey(Key.End);
         Assert.True(h.Host.RunUntilIdle());
 
-        // Click column 1 of the SHORT line (row 2, "hi"). It is not the slid active row, so the caret must
-        // land on 'i' (col 1) — not be pushed by the wide line's slide to the clamped line end (col 2).
-        h.Host.SendClick(1, 2);
+        // Click column 1 of the SHORT line (content row 2, "hi"). It is not the slid active row, so the caret
+        // must land on 'i' (col 1) — not be pushed by the wide line's slide to the clamped line end (col 2).
+        // The click is a FRAME coordinate, so add the ribbon offset to reach the editor's content row 2.
+        h.Host.SendClick(1, 2 + h.EditorTop);
         Assert.True(h.Host.RunUntilIdle());
 
         Assert.True(h.Host.FrameBuffer.CursorVisible);

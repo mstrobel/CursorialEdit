@@ -29,10 +29,12 @@ public sealed class ShellEditingIntegrationTests
         Assert.True(host.RunUntilIdle());
         Assert.False(shell.IsDirty);
 
-        // Typing flows through the attached controller into the shell-hosted surface.
+        // Typing flows through the attached controller into the shell-hosted surface. The M5 ribbon docks at
+        // the top, so the document's first content row is EditorTop frame rows down (not frame row 0).
+        int editorTop = TestSupport.ShellLayout.EditorTopRow(shell);
         host.SendText("Zed");
         Assert.True(host.RunUntilIdle());
-        Assert.StartsWith("Zed", host.GetRowText(0), StringComparison.Ordinal);
+        Assert.StartsWith("Zed", host.GetRowText(editorTop), StringComparison.Ordinal);
         Assert.Equal("Zed", shell.Document!.GetText());
 
         // Terminal caret follows the typed text (content col 3, row 0 of the editor area).
@@ -44,7 +46,7 @@ public sealed class ShellEditingIntegrationTests
         // Undo through the shell-hosted chord path restores text and caret (dirty stays until save).
         host.SendKey(Key.Character, KeyModifiers.Control, text: "z");
         Assert.True(host.RunUntilIdle());
-        Assert.Equal(string.Empty, host.GetRowText(0).TrimEnd());
+        Assert.Equal(string.Empty, host.GetRowText(editorTop).TrimEnd());
         Assert.Equal(string.Empty, shell.Document!.GetText());
         Assert.Equal(0, host.FrameBuffer.CursorColumn);
         Assert.True(shell.IsDirty);

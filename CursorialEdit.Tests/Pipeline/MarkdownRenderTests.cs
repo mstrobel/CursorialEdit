@@ -22,15 +22,24 @@ public sealed class MarkdownRenderTests
 
     public static TheoryData<string> Presets => TestSupport.CapabilityPresets.Both;
 
-    private sealed class ShellHarness(UITestHost host, EditorShell shell) : IDisposable
+    private sealed class ShellHarness(UITestHost host, EditorShell shell, int frameRows) : IDisposable
     {
         public UITestHost Host { get; } = host;
 
         public EditorShell Shell { get; } = shell;
 
-        public string Row(int row) => Host.GetRowText(row).TrimEnd();
+        // The ribbon (M5) docks at the top of the shell, so the editor's document content starts a few frame
+        // rows down. Row/Cell take EDITOR-RELATIVE rows (content row 0 = the document's first row) and offset
+        // by the ribbon's height — so the render assertions read the document, not the chrome.
+        private int EditorTop => TestSupport.ShellLayout.EditorTopRow(Shell);
 
-        public Cell Cell(int column, int row) => Host.GetCell(column, row);
+        public string Row(int row)
+        {
+            int frameRow = row + EditorTop;
+            return frameRow >= 0 && frameRow < frameRows ? Host.GetRowText(frameRow).TrimEnd() : string.Empty;
+        }
+
+        public Cell Cell(int column, int row) => Host.GetCell(column, row + EditorTop);
 
         /// <summary>The realized leaf presenters by block index (the raster observable).</summary>
         public IReadOnlyDictionary<int, LeafBlockPresenter> Leaves()
@@ -57,7 +66,7 @@ public sealed class MarkdownRenderTests
         shell.Editor.Focus();
         Assert.True(host.RunUntilIdle(), "focusing the editor did not settle");
 
-        return new ShellHarness(host, shell);
+        return new ShellHarness(host, shell, rows);
     }
 
     private static bool Has(Cell cell, TextAttributes attribute) => (cell.Style.Attributes & attribute) == attribute;

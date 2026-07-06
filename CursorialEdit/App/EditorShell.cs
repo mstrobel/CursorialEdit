@@ -1,4 +1,5 @@
 using Cursorial.Input;
+using Cursorial.Rendering;
 using Cursorial.UI;
 using Cursorial.UI.Controls;
 using Cursorial.UI.Input;
@@ -58,6 +59,9 @@ public sealed class EditorShell : DockPanel
     internal const string UntitledSaveNote = "no file path — Save As arrives in M6";
 
     private readonly EditorView _view = new();
+    private readonly EditorRibbon _ribbon;
+
+    private bool _startupFocusRequested;
 
     private DocumentFile? _file;
     private DocumentKey? _documentKey;
@@ -93,8 +97,16 @@ public sealed class EditorShell : DockPanel
         StatusLinePart.Children.Add(DirtyDotPart);
         StatusLinePart.Children.Add(StatusTextPart); // last child fills the rest of the row
 
-        Children.Add(StatusLinePart);
-        Children.Add(_view); // LastChildFill (default): the editor view takes every remaining row
+        // The Bars ribbon (M5), docked at the TOP: Home/Table/View tabs whose buttons run the editor's real
+        // operations against the persistent EditorControl. Additive — it does not steal startup focus (the
+        // editor auto-focuses via RequestStartupEditorFocus below), and the editor view stays the LAST child so
+        // LastChildFill keeps the document surface filling the space between the ribbon and the status line.
+        _ribbon = new EditorRibbon(Editor);
+        SetDock(_ribbon, Dock.Top);
+
+        Children.Add(_ribbon);        // top
+        Children.Add(StatusLinePart); // bottom
+        Children.Add(_view);          // fill (LastChildFill (default)) — must remain the last child
     }
 
     /// <summary>The instantiable document surface (EditorControl + panel + presenter feed) — §3.2 resolution 12.</summary>
@@ -102,6 +114,9 @@ public sealed class EditorShell : DockPanel
 
     /// <summary>The document surface control (focus owner, caret, input) hosted by <see cref="View"/>.</summary>
     public EditorControl Editor => _view.Editor;
+
+    /// <summary>The Bars ribbon docked at the top (Home/Table/View tabs) — the M5 command surface over <see cref="Editor"/>.</summary>
+    public EditorRibbon Ribbon => _ribbon;
 
     /// <summary>The parsed CLI options this shell was launched with (<see cref="OpenStartupDocument"/> consumes <see cref="AppStartupOptions.FilePath"/>).</summary>
     public AppStartupOptions StartupOptions { get; }
@@ -303,6 +318,37 @@ public sealed class EditorShell : DockPanel
         // — the real source-anchored caret + selection + typing path over the same controller.
         _view.Attach(Controller, BlockProducer);
         ViewBridge = _view.Bridge;
+    }
+
+    // ───────────────────────────── startup focus ─────────────────────────────
+
+    /// <summary>
+    /// Keeps the <see cref="Editor"/> the startup focus owner so typing works immediately, even though the
+    /// ribbon (docked above the editor) is the FIRST tab stop the framework's activation auto-focus would
+    /// otherwise land on. The ribbon is reached deliberately (click / access-key); it must not grab focus on
+    /// launch. Posted once, after the first arrange (layout settled, the editor focusable), and only when the
+    /// editor doesn't already hold focus — so it never overrides a focus the user or app established, and it
+    /// wins regardless of the order it races the framework's parked activation focus (either it focuses the
+    /// editor first, so the framework's "focus already landed in the root" guard leaves it, or the framework
+    /// focused the ribbon first and this corrects it).
+    /// </summary>
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        Size size = base.ArrangeOverride(finalSize);
+
+        // Consume the one-shot only when there is a live application to post to — so an arrange that somehow ran
+        // before an application is current doesn't spend the request and lose the auto-focus.
+        if (!_startupFocusRequested && UIApplication.Current is { } application)
+        {
+            _startupFocusRequested = true;
+            application.Dispatcher.Post(() =>
+            {
+                if (!Editor.IsKeyboardFocusWithin)
+                    Editor.Focus();
+            });
+        }
+
+        return size;
     }
 
     // ───────────────────────────── keyboard ─────────────────────────────

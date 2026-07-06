@@ -5,6 +5,7 @@ using Cursorial.UI.Controls;
 using Cursorial.UI.Input;
 
 using CursorialEdit.Document.Editing;
+using CursorialEdit.Document.Model;
 
 namespace CursorialEdit.Views;
 
@@ -462,7 +463,7 @@ public class EditorControl : Control, IContentRowMap
                 break;
 
             case Key.Delete when shift && !ctrl: // Shift+Delete — cut (TextBox parity alias)
-                if (!Cut(caret))
+                if (!Cut())
                     return; // nothing to cut — bubbles, consistent with Ctrl+X
                 break;
 
@@ -471,12 +472,12 @@ public class EditorControl : Control, IContentRowMap
                 break;
 
             case Key.Insert when ctrl && !shift: // Ctrl+Insert — copy (TextBox parity alias)
-                if (!Copy(caret))
+                if (!Copy())
                     return; // nothing to copy — bubbles
                 break;
 
             case Key.Insert when shift && !ctrl: // Shift+Insert — paste (TextBox parity alias)
-                if (!PasteFromStore(caret))
+                if (!Paste())
                     return; // empty store — bubbles
                 break;
 
@@ -503,17 +504,17 @@ public class EditorControl : Control, IContentRowMap
             // decoded to this chord, never as SIGINT — see the class remarks for the verified
             // wire truth.
             case Key.Character when ctrl && !shift && IsLetter(e, 'c'):
-                if (!Copy(caret))
+                if (!Copy())
                     return; // Ctrl+C with no selection is not consumed — bubbles (TextBox parity)
                 break;
 
             case Key.Character when ctrl && !shift && IsLetter(e, 'x'):
-                if (!Cut(caret))
+                if (!Cut())
                     return;
                 break;
 
             case Key.Character when ctrl && !shift && IsLetter(e, 'v'):
-                if (!PasteFromStore(caret))
+                if (!Paste())
                     return; // the store is empty — bubbles (FB-3: there is no terminal read to fall back to)
                 break;
 
@@ -553,6 +554,13 @@ public class EditorControl : Control, IContentRowMap
     public ViewMode ViewMode => _bridge?.ViewMode ?? ViewMode.Formatted;
 
     /// <summary>
+    /// Raised after <see cref="ViewMode"/> actually changes (the Ctrl+/ keybind, <see cref="ToggleViewMode"/>,
+    /// or the ribbon's Raw command) so a bound ribbon toggle reflects the live mode even when the keyboard —
+    /// not the ribbon — drove the switch (M5).
+    /// </summary>
+    public event Action? ViewModeChanged;
+
+    /// <summary>
     /// Toggles the surface between <see cref="ViewMode.Formatted"/> (WYSIWYG) and <see cref="ViewMode.Raw"/>
     /// (verbatim source) — the M2.WP10 raw-mode toggle (Ctrl+/ / Alt+/). The whole surface switches mode;
     /// the caret's source position is preserved (it is a mode-independent source anchor). A no-op when no
@@ -578,6 +586,8 @@ public class EditorControl : Control, IContentRowMap
         // scroll offset — without EnsureVisible the caret/edited line can be left off-screen. OnCaretUpdated
         // publishes the terminal caret (when focused) and calls ScrollViewer.EnsureVisible on its new row.
         OnCaretUpdated();
+
+        ViewModeChanged?.Invoke(); // let a bound ribbon toggle re-sync to the new mode (keyboard route included)
     }
 
     /// <summary>Whether <paramref name="e"/> is the view-mode toggle chord (Ctrl+/ or Alt+/, no other modifier).</summary>
@@ -592,14 +602,15 @@ public class EditorControl : Control, IContentRowMap
     // ───────────────────────────── clipboard (M1.WP9) ─────────────────────────────
 
     /// <summary>
-    /// Copy: serializes the selection's exact source range and writes both clipboard sinks.
-    /// False (nothing copied, key bubbles) when the selection is empty — M1 has no line-copy
-    /// convention (later milestones'), matching the framework <c>TextBox</c>'s unconsumed
-    /// no-selection Ctrl+C.
+    /// Copy: serializes the selection's exact source range and writes both clipboard sinks — the
+    /// single path the Ctrl+C / Ctrl+Insert keybind AND the ribbon's Copy command share (M5). False
+    /// (nothing copied, the key bubbles) when no document is attached or the selection is empty — M1
+    /// has no line-copy convention (later milestones'), matching the framework <c>TextBox</c>'s
+    /// unconsumed no-selection Ctrl+C.
     /// </summary>
-    private bool Copy(DocumentCaret caret)
+    public bool Copy()
     {
-        if (caret.SelectedText() is not { } text)
+        if (_caret is not { } caret || caret.SelectedText() is not { } text)
             return false;
 
         WriteClipboard(text);
@@ -608,12 +619,13 @@ public class EditorControl : Control, IContentRowMap
 
     /// <summary>
     /// Cut: copy (both sinks) + delete of the selection as its own undo unit — undo restores
-    /// the text <i>and</i> the selection (the recorded before-state carries the anchor).
-    /// False (key bubbles) when the selection is empty.
+    /// the text <i>and</i> the selection (the recorded before-state carries the anchor). The single
+    /// path the Ctrl+X / Shift+Delete keybind AND the ribbon's Cut command share (M5). False (the key
+    /// bubbles) when no document is attached or the selection is empty.
     /// </summary>
-    private bool Cut(DocumentCaret caret)
+    public bool Cut()
     {
-        if (caret.SelectedText() is not { } text)
+        if (_caret is not { } caret || caret.SelectedText() is not { } text)
             return false;
 
         WriteClipboard(text);
@@ -622,13 +634,14 @@ public class EditorControl : Control, IContentRowMap
     }
 
     /// <summary>
-    /// Ctrl+V / Shift+Insert: pastes the internal store's content as one literal splice
-    /// (replacing the selection). False (key bubbles) when the store is empty — this path can
-    /// only see in-app copies (FB-3); external clipboard content arrives via bracketed paste.
+    /// Ctrl+V / Shift+Insert / the ribbon's Paste command: pastes the internal store's content as one
+    /// literal splice (replacing the selection). The single path all three share (M5). False (the key
+    /// bubbles) when no document is attached or the store is empty — this path can only see in-app
+    /// copies (FB-3); external clipboard content arrives via bracketed paste.
     /// </summary>
-    private bool PasteFromStore(DocumentCaret caret)
+    public bool Paste()
     {
-        if (_clipboard.Text is not { Length: > 0 } text)
+        if (_caret is not { } caret || _clipboard.Text is not { Length: > 0 } text)
             return false;
 
         caret.Paste(text);
@@ -648,6 +661,84 @@ public class EditorControl : Control, IContentRowMap
 
         if (UIApplication.Current is { } application)
             application.Clipboard.SetText(text);
+    }
+
+    // ───────────────────────────── command surface (M5 ribbon) ─────────────────────────────
+    //
+    // Thin public forwarders the Bars ribbon binds its BarCommands to. Every one routes to the CURRENT
+    // document caret (recreated per document by AttachDocument), so a command captured against the
+    // persistent EditorControl keeps working across a document reload — the caret is resolved at call
+    // time, never captured. The keybinds above hit the very same caret methods, so ribbon and keyboard
+    // share one implementation (no duplicated logic).
+
+    /// <summary>Undo the last edit group; the Ctrl+Z keybind and the ribbon's Undo command share this path. False when there is nothing to undo.</summary>
+    public bool Undo() => _caret?.Undo() ?? false;
+
+    /// <summary>Redo the most recently undone group; the Ctrl+Y keybind and the ribbon's Redo command share this path. False when there is nothing to redo.</summary>
+    public bool Redo() => _caret?.Redo() ?? false;
+
+    /// <summary>Select the whole document (Ctrl+A / the ribbon's Select All). A no-op when no document is attached.</summary>
+    public void SelectAll() => _caret?.SelectAll();
+
+    /// <summary>Inserts an empty table row above the caret's row (Alt+↑ / ribbon). A no-op outside a table. See <see cref="DocumentCaret.TableInsertRowAbove"/>.</summary>
+    public void TableInsertRowAbove() => _caret?.TableInsertRowAbove();
+
+    /// <summary>Inserts an empty table row below the caret's row (Alt+↓ / ribbon). A no-op outside a table.</summary>
+    public void TableInsertRowBelow() => _caret?.TableInsertRowBelow();
+
+    /// <summary>Inserts an empty column to the left of the caret's column (ribbon). A no-op outside a table.</summary>
+    public void TableInsertColumnLeft() => _caret?.TableInsertColumnLeft();
+
+    /// <summary>Inserts an empty column to the right of the caret's column (ribbon). A no-op outside a table.</summary>
+    public void TableInsertColumnRight() => _caret?.TableInsertColumnRight();
+
+    /// <summary>Deletes the caret's table row — promoting the next row when it is the header (ribbon). A no-op outside a table.</summary>
+    public void TableDeleteRow() => _caret?.TableDeleteRow();
+
+    /// <summary>Deletes the caret's table column — deleting the whole table when it is the last column (ribbon). A no-op outside a table.</summary>
+    public void TableDeleteColumn() => _caret?.TableDeleteColumn();
+
+    /// <summary>Deletes the whole table the caret is in (ribbon). A no-op outside a table.</summary>
+    public void TableDelete() => _caret?.TableDelete();
+
+    /// <summary>Moves the caret's table row up (ribbon). A no-op outside a table or when the row cannot move.</summary>
+    public void TableMoveRowUp() => _caret?.TableMoveRowUp();
+
+    /// <summary>Moves the caret's table row down (ribbon). A no-op outside a table or when the row cannot move.</summary>
+    public void TableMoveRowDown() => _caret?.TableMoveRowDown();
+
+    /// <summary>Moves the caret's table column left, carrying its alignment (ribbon). A no-op outside a table or at the left edge.</summary>
+    public void TableMoveColumnLeft() => _caret?.TableMoveColumnLeft();
+
+    /// <summary>Moves the caret's table column right, carrying its alignment (ribbon). A no-op outside a table or at the right edge.</summary>
+    public void TableMoveColumnRight() => _caret?.TableMoveColumnRight();
+
+    /// <summary>Sets the caret column's alignment, rewriting only the delimiter row (ribbon). A no-op outside a table.</summary>
+    public void TableSetColumnAlignment(ColumnAlignment alignment) => _caret?.TableSetColumnAlignment(alignment);
+
+    /// <summary>Clears the caret's table cell (ribbon). A no-op outside a table.</summary>
+    public void TableClearCell() => _caret?.TableClearCell();
+
+    /// <summary>
+    /// Whether the active prose line wraps in place while edited (reveal-wrap, Decision 9 revised) vs. slides —
+    /// the View tab's "wrap while editing" toggle. Reads/writes the markdown bridge; reports the default
+    /// (<see langword="true"/>) and ignores writes when no markdown document is attached.
+    /// </summary>
+    public bool EditWrapEnabled
+    {
+        get => _bridge is MarkdownViewBridge bridge ? bridge.EditWrapEnabled : true;
+        set { if (_bridge is MarkdownViewBridge bridge) bridge.EditWrapEnabled = value; }
+    }
+
+    /// <summary>
+    /// The table cell-overflow mode (§5.6) every realized table renders under — the View tab's overflow toggle.
+    /// Reads/writes the markdown bridge; reports the default (<see cref="TableOverflow.Wrap"/>) and ignores
+    /// writes when no markdown document is attached.
+    /// </summary>
+    public TableOverflow OverflowMode
+    {
+        get => _bridge is MarkdownViewBridge bridge ? bridge.OverflowMode : TableOverflow.Wrap;
+        set { if (_bridge is MarkdownViewBridge bridge) bridge.OverflowMode = value; }
     }
 
     // ───────────────────────────── text input (typing) ─────────────────────────────
