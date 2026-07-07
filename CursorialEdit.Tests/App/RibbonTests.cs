@@ -2,7 +2,10 @@ using System.Windows.Input;
 
 using Cursorial.Input;
 using Cursorial.Rendering;
+using Cursorial.Text;
+using Cursorial.UI;
 using Cursorial.UI.Bars;
+using Cursorial.UI.Bars.Input;
 using Cursorial.UI.Controls;
 using Cursorial.UI.Testing;
 
@@ -177,6 +180,110 @@ public sealed class RibbonTests
         Assert.NotEqual(true, wrap.IsChecked);
     }
 
+    // ───────────────────────────── icons: every button carries a width-1 text glyph ─────────────────────────────
+
+    [Fact] // Every ribbon button has a glyph-string Icon that is a SINGLE width-1 grapheme with NO emoji presentation
+           // (no VS16, CodepointWidth == 1) — a predictable 1-cell text symbol, never a 2-wide color-emoji sprite.
+    public void EveryRibbonButton_HasAWidthOneTextGlyphIcon()
+    {
+        var (host, shell) = Shell("hi");
+        using var _ = host;
+
+        int buttons = 0;
+        foreach (var button in AllButtons(shell.Ribbon))
+        {
+            buttons++;
+            string label = ((BarCommand)button.Command!).Text!;
+            object? icon = button.GetValue(BarButton.IconProperty);
+
+            var glyph = Assert.IsType<string>(icon); // the glyph tier is a string; the image tier stays null
+            Assert.Equal(1, GraphemeWidth.ClusterCount(glyph));                          // one grapheme cluster
+            Assert.Equal(1, GraphemeWidth.StringWidth(glyph));                           // …occupying exactly one cell
+            foreach (var rune in glyph.EnumerateRunes())
+            {
+                Assert.NotEqual(0xFE0F, rune.Value);                                     // no VS16 emoji-presentation selector
+                Assert.Equal(1, GraphemeWidth.CodepointWidth(rune));                     // every codepoint is width-1 (not a wide/emoji sprite)
+            }
+        }
+
+        Assert.True(buttons >= 24, $"expected the full button set to carry icons, saw {buttons}");
+    }
+
+    // ───────────────────────────── access keys: assigned + collision-free per drill scope ─────────────────────────────
+
+    [Fact] // Every tab, group, and button has a KeyTip letter, and the letters don't collide within a drill scope
+           // (tabs among themselves; groups within a tab; controls within a group) — so Alt+letter never bonks.
+    public void EveryTabGroupAndButton_HasANonCollidingAccessKey()
+    {
+        var (host, shell) = Shell("hi");
+        using var _ = host;
+        var ribbon = shell.Ribbon;
+
+        // Tabs.
+        var tabKeys = Tabs(ribbon).Select(KeyTipLetter).ToList();
+        Assert.All(tabKeys, k => Assert.NotNull(k));
+        AssertNoDuplicates(tabKeys, "tab");
+
+        foreach (var tab in Tabs(ribbon))
+        {
+            // Groups within this tab.
+            var groupKeys = Groups(tab).Select(KeyTipLetter).ToList();
+            Assert.All(groupKeys, k => Assert.NotNull(k));
+            AssertNoDuplicates(groupKeys, $"group in tab '{tab.Header}'");
+
+            foreach (var group in Groups(tab))
+            {
+                // Controls within this group.
+                var controlKeys = group.Items.OfType<ButtonBase>().Select(KeyTipLetter).ToList();
+                Assert.All(controlKeys, k => Assert.NotNull(k));
+                AssertNoDuplicates(controlKeys, $"control in group '{group.Header}' of tab '{tab.Header}'");
+            }
+        }
+    }
+
+    // ───────────────────────────── View: the Overflow segmented control reflects + sets OverflowMode ─────────────────────────────
+
+    [Theory]
+    [MemberData(nameof(Presets))]
+    public void View_OverflowSegmentedControl_ReflectsAndSetsOverflowMode(string preset)
+    {
+        var (host, shell) = Shell("| A | B |\n|---|---|\n| 1 | 2 |\n", preset, columns: 48, rows: 20);
+        using var _ = host;
+
+        SelectTab(shell.Ribbon, "View"); // realize the View band so the toggles attach + reflect
+        Assert.True(host.RunUntilIdle());
+
+        var wrap = (BarToggleButton)FindButtonInGroup(shell.Ribbon, "View", "Overflow", "Wrap");
+        var truncate = (BarToggleButton)FindButtonInGroup(shell.Ribbon, "View", "Overflow", "Truncate");
+
+        // Default: Wrap — exactly the Wrap toggle is checked.
+        Assert.Equal(TableOverflow.Wrap, shell.Editor.OverflowMode);
+        Assert.Equal(true, wrap.IsChecked);
+        Assert.NotEqual(true, truncate.IsChecked);
+
+        // Select Truncate → the editor's mode flips and mutual exclusion holds (Wrap unchecks).
+        InvokeInGroup(shell, "View", "Overflow", "Truncate");
+        Assert.True(host.RunUntilIdle());
+        Assert.Equal(TableOverflow.Truncate, shell.Editor.OverflowMode);
+        Assert.NotEqual(true, wrap.IsChecked);
+        Assert.Equal(true, truncate.IsChecked);
+        Assert.True(shell.Editor.IsKeyboardFocusWithin, "the editor is refocused after the ribbon command");
+
+        // Select Wrap → back to Wrap.
+        InvokeInGroup(shell, "View", "Overflow", "Wrap");
+        Assert.True(host.RunUntilIdle());
+        Assert.Equal(TableOverflow.Wrap, shell.Editor.OverflowMode);
+        Assert.Equal(true, wrap.IsChecked);
+        Assert.NotEqual(true, truncate.IsChecked);
+
+        // Re-selecting the ACTIVE choice is a no-op (radio semantics — it never toggles Wrap off).
+        InvokeInGroup(shell, "View", "Overflow", "Wrap");
+        Assert.True(host.RunUntilIdle());
+        Assert.Equal(TableOverflow.Wrap, shell.Editor.OverflowMode);
+        Assert.Equal(true, wrap.IsChecked);
+        Assert.NotEqual(true, truncate.IsChecked);
+    }
+
     // ───────────────────────────── no focus regression ─────────────────────────────
 
     [Theory]
@@ -212,6 +319,19 @@ public sealed class RibbonTests
         => Groups(Tab(ribbon, tab)).Single(g => (string?)g.Header == group)
             .Items.OfType<ButtonBase>().Select(b => ((BarCommand)b.Command!).Text!).ToArray();
 
+    private static IEnumerable<ButtonBase> AllButtons(EditorRibbon ribbon)
+        => Tabs(ribbon).SelectMany(Groups).SelectMany(g => g.Items.OfType<ButtonBase>());
+
+    // The KeyTip badge letter the Alt overlay would derive for a control (explicit KeyTip.Key on tabs/groups; the
+    // folded access-key mnemonic on buttons). Null when nothing is derivable.
+    private static string? KeyTipLetter(UIElement element) => KeyTipModel.Resolve(element).KeyTip;
+
+    private static void AssertNoDuplicates(IReadOnlyCollection<string?> keys, string scope)
+    {
+        var dupes = keys.GroupBy(k => k).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+        Assert.True(dupes.Count == 0, $"colliding {scope} KeyTip letter(s): {string.Join(", ", dupes)}");
+    }
+
     private static ButtonBase FindButton(EditorRibbon ribbon, string tab, string label)
     {
         foreach (var group in Groups(Tab(ribbon, tab)))
@@ -222,11 +342,30 @@ public sealed class RibbonTests
         throw new Xunit.Sdk.XunitException($"no button '{label}' on tab '{tab}'");
     }
 
+    // Group-scoped find — disambiguates a label that appears in more than one group of a tab (e.g. the View tab's
+    // "Wrap" is BOTH the prose-wrap toggle and the Overflow segmented control's wrap choice).
+    private static ButtonBase FindButtonInGroup(EditorRibbon ribbon, string tab, string group, string label)
+    {
+        var g = Groups(Tab(ribbon, tab)).Single(gr => (string?)gr.Header == group);
+        foreach (var item in g.Items)
+            if (item is ButtonBase b && b.Command is BarCommand cmd && cmd.Text == label)
+                return b;
+
+        throw new Xunit.Sdk.XunitException($"no button '{label}' in group '{group}' on tab '{tab}'");
+    }
+
     private static void Invoke(EditorShell shell, string tab, string label)
     {
         var button = FindButton(shell.Ribbon, tab, label);
         ICommand command = button.Command!;
         command.Execute(button.CommandParameter); // exactly what a click/keyboard-activate routes to
+    }
+
+    private static void InvokeInGroup(EditorShell shell, string tab, string group, string label)
+    {
+        var button = FindButtonInGroup(shell.Ribbon, tab, group, label);
+        ICommand command = button.Command!;
+        command.Execute(button.CommandParameter);
     }
 
     private static void SelectTab(EditorRibbon ribbon, string header)

@@ -1,6 +1,7 @@
 using System.Reflection;
 
 using Cursorial.UI;
+using Cursorial.UI.Bars;
 
 using CursorialEdit.App;
 using CursorialEdit.Diagnostics;
@@ -164,6 +165,11 @@ UIApplication app = UIApplication.CreateBuilder()
                                  .WithFrameRate(60) // §13 targets keystroke→frame < 16 ms; 60 fps pacing to match (Gallery's choice)
                                  .UseAlternateScreen()
                                  .Build();
+
+// Enable the Bars KeyTip overlay (the Alt-held accelerator badges) for the ribbon: Alt reveals the tab/group/button
+// key tips, and the tab → group → control drill activates a command. Idempotent and gated — it no-ops on terminals
+// that don't satisfy the AltHeld gate (a legacy terminal simply never arms the overlay).
+app.EnableKeyTips();
 
 // FB-4 workaround: register from Started — AFTER TerminalSession.OpenAsync registered its own
 // signal handlers — so ours run FIRST (the runtime invokes handlers newest-first) and the restore

@@ -1,5 +1,6 @@
 using Cursorial.UI;
 using Cursorial.UI.Bars;
+using Cursorial.UI.Controls;
 
 using CursorialEdit.Document.Model;
 using CursorialEdit.Views;
@@ -22,11 +23,32 @@ namespace CursorialEdit.App;
 /// does not disturb typing.
 /// </para>
 /// <para>
-/// <b>Checkable View toggles.</b> The Raw / Wrap / Truncate toggles carry a
-/// <see cref="CheckableCommandParameter"/> the <see cref="BarToggleButton"/> reads on every command re-query,
-/// so their checked state reflects the editor's live state. The Raw toggle additionally re-syncs from
-/// <see cref="EditorControl.ViewModeChanged"/>, so a keyboard Ctrl+/ that flips the mode is reflected on the
-/// ribbon too.
+/// <b>Glyph icons.</b> Every button carries a monochrome, <i>text-presentation</i> glyph on its
+/// <see cref="BarButton.Icon"/> tier (the image tier is left null, per the design). Each glyph is width-1 with
+/// no emoji-presentation selector (no VS16, Emoji=No) — see the <c>Icon*</c> constants — so it renders as a
+/// predictable single terminal cell and never as a 2-wide color-emoji sprite. Verified by
+/// <c>RibbonTests.EveryRibbonButton_HasAWidthOneTextGlyphIcon</c>.
+/// </para>
+/// <para>
+/// <b>KeyTips / access keys.</b> Every button folds an access-key literal into its <see cref="ContentControl.Content"/>
+/// (e.g. <c>"_Paste"</c>), which both underlines the mnemonic and registers the Alt+letter accelerator with the
+/// <c>AccessKeyManager</c>; every tab and group carries an explicit <see cref="KeyTip.Key"/>. The keys are assigned
+/// collision-free within each drill scope (tabs; groups within a tab; controls within a group). The app enables the
+/// Bars KeyTip overlay (<c>UIApplication.EnableKeyTips</c> in <c>Program</c>), so Alt reveals the badges and the
+/// tab → group → control drill activates each command.
+/// </para>
+/// <para>
+/// <b>Checkable View toggles.</b> The Raw / Wrap toggles carry a <see cref="CheckableCommandParameter"/> the
+/// <see cref="BarToggleButton"/> reads on every command re-query, so their checked state reflects the editor's live
+/// state. The Raw toggle additionally re-syncs from <see cref="EditorControl.ViewModeChanged"/>, so a keyboard Ctrl+/
+/// that flips the mode is reflected on the ribbon too.
+/// </para>
+/// <para>
+/// <b>Overflow segmented control.</b> The View tab's Overflow group is a two-state segmented control — two
+/// mutually-exclusive toggles, <c>Wrap</c> and <c>Truncate</c>, reflecting and setting
+/// <see cref="EditorControl.OverflowMode"/> (the automatic column-window horizontal scroll is orthogonal, not a
+/// choice here). Selecting one sets the mode and re-syncs both toggles, so exactly one is checked; re-selecting the
+/// active choice is a no-op (radio semantics, never a toggle-off).
 /// </para>
 /// <para>
 /// <b>FB-27 (deferred).</b> Context-gating the Table ops (greying them out when the caret is not in a table) is
@@ -36,19 +58,57 @@ namespace CursorialEdit.App;
 /// <para>
 /// <b>Toggle re-sync on document reload (deferred).</b> A fresh document resets the bridge to its defaults
 /// (Formatted / wrap-on / overflow-wrap). The Raw toggle re-syncs from <see cref="EditorControl.ViewModeChanged"/>,
-/// but the Wrap / Truncate toggles are seeded once at construction; their seeds match the bridge defaults, and
-/// M5 has no UI that reloads the document after the ribbon is live (file-open lands in M6), so no stale checked
-/// state is reachable yet. When M6 wires a ribbon-driven Open/New, re-sync all three toggles on the document swap.
+/// but the Wrap toggle and the Overflow segmented control are seeded once at construction; their seeds match the
+/// bridge defaults, and M5 has no UI that reloads the document after the ribbon is live (file-open lands in M6), so
+/// no stale checked state is reachable yet. When M6 wires a ribbon-driven Open/New, re-sync them on the document swap.
 /// </para>
 /// </remarks>
 public sealed class EditorRibbon : Ribbon
 {
+    // ───────────────────────────── icon glyphs ─────────────────────────────
+    // Monochrome, text-presentation glyphs — each is a SINGLE width-1 grapheme with NO emoji-presentation
+    // (no VS16, Emoji=No, GraphemeWidth.CodepointWidth == 1), so it renders as predictable 1-cell text and never
+    // as a 2-wide color-emoji sprite (which we diagnosed bleeding over popups). The codepoint is spelled out in
+    // each trailing comment; RibbonTests re-verifies width-1/no-VS16 for every one so a bad glyph fails the suite.
+    private const string IconCut = "✁";            // U+2701 ✁ upper-blade scissors
+    private const string IconCopy = "⧉";           // U+29C9 ⧉ two joined squares (duplicate)
+    private const string IconPaste = "▤";          // U+25A4 ▤ square with horizontal fill (clipboard)
+    private const string IconUndo = "↶";           // U+21B6 ↶ anticlockwise top semicircle arrow
+    private const string IconRedo = "↷";           // U+21B7 ↷ clockwise top semicircle arrow
+    private const string IconSelectAll = "⬚";      // U+2B1A ⬚ dotted square (selection marquee)
+    private const string IconInsertRowAbove = "↥"; // U+21A5 ↥ upwards arrow from bar
+    private const string IconInsertRowBelow = "↧"; // U+21A7 ↧ downwards arrow from bar
+    private const string IconInsertColLeft = "↤";  // U+21A4 ↤ leftwards arrow from bar
+    private const string IconInsertColRight = "↦"; // U+21A6 ↦ rightwards arrow from bar
+    private const string IconDeleteRow = "⊖";      // U+2296 ⊖ circled minus
+    private const string IconDeleteCol = "⊘";      // U+2298 ⊘ circled division slash
+    private const string IconDeleteTable = "⊗";    // U+2297 ⊗ circled times
+    private const string IconMoveRowUp = "↑";      // U+2191 ↑ upwards arrow
+    private const string IconMoveRowDown = "↓";    // U+2193 ↓ downwards arrow
+    private const string IconMoveColLeft = "←";    // U+2190 ← leftwards arrow
+    private const string IconMoveColRight = "→";   // U+2192 → rightwards arrow
+    private const string IconAlignLeft = "⇤";      // U+21E4 ⇤ leftwards arrow to bar
+    private const string IconAlignCenter = "↹";    // U+21B9 ↹ opposing arrows to a central bar (centered)
+    private const string IconAlignRight = "⇥";     // U+21E5 ⇥ rightwards arrow to bar
+    private const string IconClearCell = "∅";      // U+2205 ∅ empty set (clear to empty)
+    private const string IconRaw = "⌗";            // U+2317 ⌗ viewdata square (markdown source)
+    private const string IconWrap = "↵";           // U+21B5 ↵ downwards arrow with corner leftwards (wrap/return)
+    private const string IconTruncate = "…";       // U+2026 … horizontal ellipsis (the truncation marker)
+
     private readonly EditorControl _editor;
 
     // The Raw toggle's command + checked-state carrier — held so ViewModeChanged (a keyboard-driven flip) can
     // re-sync the toggle without a ribbon interaction.
     private readonly CheckableCommandParameter _rawChecked;
     private readonly BarCommand _rawCommand;
+
+    // The Overflow segmented control's two commands + checked-state carriers — held so selecting either choice can
+    // re-sync BOTH toggles (mutual exclusion) from the single EditorControl.OverflowMode. Assigned in BuildViewTab,
+    // which the constructor calls before anything can reach the setters below.
+    private CheckableCommandParameter _overflowWrapChecked = null!;
+    private CheckableCommandParameter _overflowTruncateChecked = null!;
+    private BarCommand _overflowWrapCommand = null!;
+    private BarCommand _overflowTruncateCommand = null!;
 
     private bool _viewModeSubscribed;
 
@@ -112,19 +172,19 @@ public sealed class EditorRibbon : Ribbon
 
     private RibbonTab BuildHomeTab()
     {
-        var paste = Button("Paste", () => _editor.Paste(), "Ctrl+V");
+        var paste = Button("_Paste", IconPaste, () => _editor.Paste(), "Ctrl+V");
         SetButtonSize(paste, RibbonButtonSize.Large); // the signature large glyph-over-label button
 
-        return Tab("Home",
-            Group("Clipboard",
-                Button("Cut", () => _editor.Cut(), "Ctrl+X"),
-                Button("Copy", () => _editor.Copy(), "Ctrl+C"),
+        return Tab("Home", "H",
+            Group("Clipboard", "C",
+                Button("_Cut", IconCut, () => _editor.Cut(), "Ctrl+X"),
+                Button("C_opy", IconCopy, () => _editor.Copy(), "Ctrl+C"),
                 paste),
-            Group("Undo",
-                Button("Undo", () => _editor.Undo(), "Ctrl+Z"),
-                Button("Redo", () => _editor.Redo(), "Ctrl+Y")),
-            Group("Edit",
-                Button("Select All", _editor.SelectAll, "Ctrl+A")));
+            Group("Undo", "U",
+                Button("_Undo", IconUndo, () => _editor.Undo(), "Ctrl+Z"),
+                Button("_Redo", IconRedo, () => _editor.Redo(), "Ctrl+Y")),
+            Group("Edit", "E",
+                Button("_Select All", IconSelectAll, _editor.SelectAll, "Ctrl+A")));
     }
 
     // ───────────────────────────── Table ─────────────────────────────
@@ -134,55 +194,83 @@ public sealed class EditorRibbon : Ribbon
         // TODO(FB-27): gate every Table command on caret-in-table (pass a canExecute reading a
         // coerced "caret in a table" state) once that framework coercion lands. Until then the buttons
         // stay always-enabled; the ops themselves no-op safely off a table.
-        return Tab("Table",
-            Group("Insert",
-                Button("Row Above", _editor.TableInsertRowAbove, "Alt+↑"),
-                Button("Row Below", _editor.TableInsertRowBelow, "Alt+↓"),
-                Button("Column Left", _editor.TableInsertColumnLeft),
-                Button("Column Right", _editor.TableInsertColumnRight)),
-            Group("Delete",
-                Button("Delete Row", _editor.TableDeleteRow),
-                Button("Delete Column", _editor.TableDeleteColumn),
-                Button("Delete Table", _editor.TableDelete)),
-            Group("Move",
-                Button("Row Up", _editor.TableMoveRowUp),
-                Button("Row Down", _editor.TableMoveRowDown),
-                Button("Column Left", _editor.TableMoveColumnLeft),
-                Button("Column Right", _editor.TableMoveColumnRight)),
-            Group("Cells",
+        return Tab("Table", "T",
+            Group("Insert", "I",
+                Button("Row _Above", IconInsertRowAbove, _editor.TableInsertRowAbove, "Alt+↑"),
+                Button("Row _Below", IconInsertRowBelow, _editor.TableInsertRowBelow, "Alt+↓"),
+                Button("Column _Left", IconInsertColLeft, _editor.TableInsertColumnLeft),
+                Button("Column _Right", IconInsertColRight, _editor.TableInsertColumnRight)),
+            Group("Delete", "D",
+                Button("Delete _Row", IconDeleteRow, _editor.TableDeleteRow),
+                Button("Delete _Column", IconDeleteCol, _editor.TableDeleteColumn),
+                Button("Delete _Table", IconDeleteTable, _editor.TableDelete)),
+            Group("Move", "M",
+                Button("Row _Up", IconMoveRowUp, _editor.TableMoveRowUp),
+                Button("Row _Down", IconMoveRowDown, _editor.TableMoveRowDown),
+                Button("Column _Left", IconMoveColLeft, _editor.TableMoveColumnLeft),
+                Button("Column _Right", IconMoveColRight, _editor.TableMoveColumnRight)),
+            Group("Cells", "C",
                 // Alignment: three actions calling TableSetColumnAlignment. A reflecting toggle-set (checked =
                 // the caret column's current alignment) is a follow-up — it reads caret-in-table state, FB-27's job.
-                Button("Align Left", () => _editor.TableSetColumnAlignment(ColumnAlignment.Left)),
-                Button("Align Center", () => _editor.TableSetColumnAlignment(ColumnAlignment.Center)),
-                Button("Align Right", () => _editor.TableSetColumnAlignment(ColumnAlignment.Right)),
+                Button("Align _Left", IconAlignLeft, () => _editor.TableSetColumnAlignment(ColumnAlignment.Left)),
+                Button("Align C_enter", IconAlignCenter, () => _editor.TableSetColumnAlignment(ColumnAlignment.Center)),
+                Button("Align _Right", IconAlignRight, () => _editor.TableSetColumnAlignment(ColumnAlignment.Right)),
                 new BarSeparator(),
-                Button("Clear Cell", _editor.TableClearCell)));
+                Button("_Clear Cell", IconClearCell, _editor.TableClearCell)));
     }
 
     // ───────────────────────────── View ─────────────────────────────
 
     private RibbonTab BuildViewTab()
     {
-        var raw = new BarToggleButton { Content = "Raw", Command = _rawCommand, CommandParameter = _rawChecked };
+        var raw = new BarToggleButton { Content = "_Raw", Icon = IconRaw, Command = _rawCommand, CommandParameter = _rawChecked };
 
         var wrapChecked = new CheckableCommandParameter(_editor.EditWrapEnabled);
-        var wrap = Toggle("Wrap", wrapChecked, () =>
+        var wrap = Toggle("_Wrap", IconWrap, wrapChecked, () =>
         {
             _editor.EditWrapEnabled = !_editor.EditWrapEnabled;
             wrapChecked.IsChecked = _editor.EditWrapEnabled; // re-read the real state (the command owns the checked bit)
         });
 
-        var truncateChecked = new CheckableCommandParameter(_editor.OverflowMode == TableOverflow.Truncate);
-        var truncate = Toggle("Truncate", truncateChecked, () =>
+        // Overflow: a two-state segmented control (Wrap ⇄ Truncate). Two mutually-exclusive toggles reflecting +
+        // setting EditorControl.OverflowMode; selecting one sets the mode and re-syncs BOTH toggles so exactly one
+        // is checked (see SetOverflowMode/SyncOverflowToggles). Re-selecting the active choice is a no-op.
+        _overflowWrapChecked = new CheckableCommandParameter(_editor.OverflowMode == TableOverflow.Wrap);
+        _overflowTruncateChecked = new CheckableCommandParameter(_editor.OverflowMode == TableOverflow.Truncate);
+        _overflowWrapCommand = new BarCommand(() => Run(() => SetOverflowMode(TableOverflow.Wrap))) { Text = "Wrap", IsCheckable = true };
+        _overflowTruncateCommand = new BarCommand(() => Run(() => SetOverflowMode(TableOverflow.Truncate))) { Text = "Truncate", IsCheckable = true };
+        var overflowWrap = new BarToggleButton
         {
-            _editor.OverflowMode = _editor.OverflowMode == TableOverflow.Truncate ? TableOverflow.Wrap : TableOverflow.Truncate;
-            truncateChecked.IsChecked = _editor.OverflowMode == TableOverflow.Truncate;
-        });
+            Content = "_Wrap", Icon = IconWrap, Command = _overflowWrapCommand, CommandParameter = _overflowWrapChecked,
+        };
+        var overflowTruncate = new BarToggleButton
+        {
+            Content = "_Truncate", Icon = IconTruncate, Command = _overflowTruncateCommand, CommandParameter = _overflowTruncateChecked,
+        };
 
-        return Tab("View",
-            Group("Mode", raw),
-            Group("Wrap", wrap),
-            Group("Overflow", truncate));
+        return Tab("View", "V",
+            Group("Mode", "M", raw),
+            Group("Wrap", "W", wrap),
+            Group("Overflow", "O", overflowWrap, overflowTruncate));
+    }
+
+    // Sets the editor's table-cell overflow mode from the segmented control, then re-syncs both toggles so the
+    // choice is mutually exclusive (exactly one checked) regardless of which button was pressed.
+    private void SetOverflowMode(TableOverflow mode)
+    {
+        _editor.OverflowMode = mode;
+        SyncOverflowToggles();
+    }
+
+    // Reflects the single EditorControl.OverflowMode onto both segmented toggles and re-queries their commands so
+    // the bound BarToggleButtons re-read the checked bit.
+    private void SyncOverflowToggles()
+    {
+        TableOverflow mode = _editor.OverflowMode;
+        _overflowWrapChecked.IsChecked = mode == TableOverflow.Wrap;
+        _overflowTruncateChecked.IsChecked = mode == TableOverflow.Truncate;
+        _overflowWrapCommand.RaiseCanExecuteChanged();
+        _overflowTruncateCommand.RaiseCanExecuteChanged();
     }
 
     // ───────────────────────────── construction helpers ─────────────────────────────
@@ -195,31 +283,37 @@ public sealed class EditorRibbon : Ribbon
         _editor.Focus();
     }
 
-    private BarButton Button(string text, Action op, string? gesture = null)
+    // `content` folds an access-key literal (e.g. "_Paste"): it underlines the mnemonic, registers the Alt+letter
+    // accelerator, and seeds the KeyTip badge. The command's Text is the clean display label (underscore stripped)
+    // used for tooltips and command identity; `icon` is a width-1 text glyph (set directly on the control, so the
+    // BarCommand auto-fill preserves it).
+    private BarButton Button(string content, string icon, Action op, string? gesture = null)
     {
         // Bool-returning ops (Copy/Cut/Paste/Undo/Redo) are wrapped by the caller as `() => _editor.Xxx()`
         // — the result is discarded (the ribbon runs the op unconditionally, unlike the keybind which bubbles).
-        var command = new BarCommand(() => Run(op)) { Text = text, InputGestureText = gesture };
-        return new BarButton { Content = text, Command = command };
+        var command = new BarCommand(() => Run(op)) { Text = AccessText.Parse(content).Text, InputGestureText = gesture };
+        return new BarButton { Content = content, Icon = icon, Command = command };
     }
 
-    private BarToggleButton Toggle(string text, CheckableCommandParameter checkedState, Action toggle, string? gesture = null)
+    private BarToggleButton Toggle(string content, string icon, CheckableCommandParameter checkedState, Action toggle, string? gesture = null)
     {
-        var command = new BarCommand(() => Run(toggle)) { Text = text, InputGestureText = gesture, IsCheckable = true };
-        return new BarToggleButton { Content = text, Command = command, CommandParameter = checkedState };
+        var command = new BarCommand(() => Run(toggle)) { Text = AccessText.Parse(content).Text, InputGestureText = gesture, IsCheckable = true };
+        return new BarToggleButton { Content = content, Icon = icon, Command = command, CommandParameter = checkedState };
     }
 
-    private static RibbonGroup Group(string header, params UIElement[] items)
+    private static RibbonGroup Group(string header, string keyTip, params UIElement[] items)
     {
         var group = new RibbonGroup { Header = header };
+        KeyTip.SetKey(group, keyTip); // explicit, collision-immune group letter for the Alt drill's second level
         foreach (var item in items)
             group.Items.Add(item);
         return group;
     }
 
-    private static RibbonTab Tab(string header, params RibbonGroup[] groups)
+    private static RibbonTab Tab(string header, string keyTip, params RibbonGroup[] groups)
     {
         var tab = new RibbonTab { Header = header };
+        KeyTip.SetKey(tab, keyTip); // explicit, collision-immune tab letter for the Alt drill's first level
         foreach (var group in groups)
             tab.Groups.Add(group);
         return tab;
