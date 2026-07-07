@@ -70,9 +70,18 @@ public sealed class EditorRibbon : Ribbon
     // (no VS16, Emoji=No, GraphemeWidth.CodepointWidth == 1), so it renders as predictable 1-cell text and never
     // as a 2-wide color-emoji sprite (which we diagnosed bleeding over popups). The codepoint is spelled out in
     // each trailing comment; RibbonTests re-verifies width-1/no-VS16 for every one so a bad glyph fails the suite.
-    private const string IconCut = "✁";            // U+2701 ✁ upper-blade scissors
-    private const string IconCopy = "⧉";           // U+29C9 ⧉ two joined squares (duplicate)
-    private const string IconPaste = "▤";          // U+25A4 ▤ square with horizontal fill (clipboard)
+    // Cut/Copy/Paste are `internal` so the right-click MiniToolbar (EditorContextBar) reuses the SAME glyph
+    // vocabulary — one source of truth for the shared clipboard icons across the ribbon and the mini toolbar.
+    internal const string IconCut = "✁";           // U+2701 ✁ upper-blade scissors
+    internal const string IconCopy = "⧉";          // U+29C9 ⧉ two joined squares (duplicate)
+    internal const string IconPaste = "▤";         // U+25A4 ▤ square with horizontal fill (clipboard)
+
+    // Inline-format glyphs (M4 slice) — shared with the MiniToolbar today, and the glyphs the ribbon will use when
+    // it surfaces Bold/Italic/InlineCode later. Width-1 text-presentation like the rest (no VS16); the deliberate
+    // avoidance of the math-alphanumeric 𝐁/𝐼 (which some terminals render 2 cells wide) is why these are symbols.
+    internal const string IconBold = "✱";          // U+2731 ✱ heavy asterisk (heavy weight ⇒ bold; the ** marker)
+    internal const string IconItalic = "⟋";        // U+27CB ⟋ rising diagonal (a slant ⇒ italic)
+    internal const string IconInlineCode = "`";    // U+0060 ` grave accent — the literal inline-code marker
     private const string IconUndo = "↶";           // U+21B6 ↶ anticlockwise top semicircle arrow
     private const string IconRedo = "↷";           // U+21B7 ↷ clockwise top semicircle arrow
     private const string IconSelectAll = "⬚";      // U+2B1A ⬚ dotted square (selection marquee)

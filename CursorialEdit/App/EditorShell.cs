@@ -1,6 +1,7 @@
 using Cursorial.Input;
 using Cursorial.Rendering;
 using Cursorial.UI;
+using Cursorial.UI.Bars;
 using Cursorial.UI.Controls;
 using Cursorial.UI.Input;
 
@@ -60,6 +61,7 @@ public sealed class EditorShell : DockPanel
 
     private readonly EditorView _view = new();
     private readonly EditorRibbon _ribbon;
+    private readonly EditorContextBar _contextBar;
 
     private bool _startupFocusRequested;
 
@@ -107,6 +109,12 @@ public sealed class EditorShell : DockPanel
         Children.Add(_ribbon);        // top
         Children.Add(StatusLinePart); // bottom
         Children.Add(_view);          // fill (LastChildFill (default)) — must remain the last child
+
+        // The right-click Mini Toolbar (a horizontal light-dismiss strip of icon-only Cut/Copy/Paste + Bold/Italic/
+        // InlineCode buttons) attached to the editor surface: a right-click over the document opens it at the pointer.
+        // It runs the SAME EditorControl operations as the ribbon/keyboard and re-focuses the editor after an action.
+        _contextBar = new EditorContextBar(Editor);
+        MiniToolbar.SetBar(Editor, _contextBar.Bar);
     }
 
     /// <summary>The instantiable document surface (EditorControl + panel + presenter feed) — §3.2 resolution 12.</summary>
@@ -117,6 +125,9 @@ public sealed class EditorShell : DockPanel
 
     /// <summary>The Bars ribbon docked at the top (Home/Table/View tabs) — the M5 command surface over <see cref="Editor"/>.</summary>
     public EditorRibbon Ribbon => _ribbon;
+
+    /// <summary>The editor's right-click Mini Toolbar (Cut/Copy/Paste + Bold/Italic/InlineCode) — the pointer command surface over <see cref="Editor"/>.</summary>
+    public MiniToolbar ContextBar => _contextBar.Bar;
 
     /// <summary>The parsed CLI options this shell was launched with (<see cref="OpenStartupDocument"/> consumes <see cref="AppStartupOptions.FilePath"/>).</summary>
     public AppStartupOptions StartupOptions { get; }

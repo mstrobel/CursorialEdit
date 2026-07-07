@@ -680,6 +680,15 @@ public class EditorControl : Control, IContentRowMap
     /// <summary>Select the whole document (Ctrl+A / the ribbon's Select All). A no-op when no document is attached.</summary>
     public void SelectAll() => _caret?.SelectAll();
 
+    /// <summary>Wrap the selection's source range in <c>**…**</c> (the MiniToolbar's Bold command); with no selection inserts an empty pair with the caret between the marks. A no-op when no document is attached, inside a table cell, or across blocks. See <see cref="DocumentCaret.Bold"/>.</summary>
+    public void Bold() => _caret?.Bold();
+
+    /// <summary>Wrap the selection's source range in <c>*…*</c> (the MiniToolbar's Italic command). A no-op when no document is attached, inside a table cell, or across blocks. See <see cref="DocumentCaret.Italic"/>.</summary>
+    public void Italic() => _caret?.Italic();
+
+    /// <summary>Wrap the selection's source range in <c>`…`</c> (the MiniToolbar's Inline Code command). A no-op when no document is attached, inside a table cell, or across blocks. See <see cref="DocumentCaret.InlineCode"/>.</summary>
+    public void InlineCode() => _caret?.InlineCode();
+
     /// <summary>Inserts an empty table row above the caret's row (Alt+↑ / ribbon). A no-op outside a table. See <see cref="DocumentCaret.TableInsertRowAbove"/>.</summary>
     public void TableInsertRowAbove() => _caret?.TableInsertRowAbove();
 

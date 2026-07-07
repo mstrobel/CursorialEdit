@@ -835,6 +835,93 @@ internal sealed class DocumentCaret : ISelectionSource
         ReplaceSelectionOrInsert(text, EditKind.Paste);
     }
 
+    // ───────────────────────────── inline formatting (M4 slice) ─────────────────────────────
+
+    /// <summary>Bold: wraps the selection's source range in <c>**…**</c> (see <see cref="WrapSelection"/>).</summary>
+    public void Bold() => WrapSelection("**");
+
+    /// <summary>Italic: wraps the selection's source range in <c>*…*</c> (see <see cref="WrapSelection"/>).</summary>
+    public void Italic() => WrapSelection("*");
+
+    /// <summary>Inline code: wraps the selection's source range in <c>`…`</c> (see <see cref="WrapSelection"/>).</summary>
+    public void InlineCode() => WrapSelection("`");
+
+    /// <summary>
+    /// Wraps the current selection's SOURCE range in <paramref name="mark"/> on both sides as ONE atomic
+    /// (<see cref="EditKind.Structural"/>) undo group — the minimal M4 inline-formatting primitive (v1 wraps
+    /// only; toggle-off is deferred). With a selection the marks bracket the exact source range and the
+    /// selection is restored to re-cover the inner text; with no selection an empty pair is inserted and the
+    /// caret lands <b>between</b> the marks (<c>**|**</c>). The edit is a plain source splice — the
+    /// reveal/formatting pipeline re-derives the render from it, so no presenter is hand-touched.
+    /// </summary>
+    /// <remarks>
+    /// Scope guard (the prose common case): a no-op when the caret — or, for a selection, either end — sits in a
+    /// table block (wrapping raw marks around a cell range would bypass the pipe-aware table splice and could
+    /// corrupt the row; tables are deliberately <b>not</b> special-cased), and a no-op when a selection spans two
+    /// blocks (inline marks only make sense within one block). A backwards selection is normalized first, so the
+    /// marks and the restored inner selection are direction-independent.
+    /// </remarks>
+    private void WrapSelection(string mark)
+    {
+        if (_buffer.LineCount == 0 || Blocks.Count == 0)
+            return;
+
+        // Guard tables: a raw-mark splice inside a cell would corrupt the pipe structure — no-op when either end is
+        // in a table block (do NOT special-case tables — the pipe-aware path is the table controller's job).
+        if (BlockAtLineIsTable(_position.Line) || (_anchor is { } tableEnd && BlockAtLineIsTable(tableEnd.Line)))
+            return;
+
+        if (_anchor is { } anchor && anchor != _position)
+        {
+            var (start, end) = NormalizedSelection();
+
+            // Only wrap a selection contained in ONE block (prose); a cross-block selection is left untouched.
+            if (Blocks.IndexOfLine(start.Line) != Blocks.IndexOfLine(end.Line))
+                return;
+
+            string inner = _buffer.GetText(start, end);
+            var edit = new Edit(start, inner, mark + inner + mark);
+
+            // Post-splice landings (arithmetic — the two conceptual mark insertions): the opening mark shifts the
+            // inner start right by mark.Length on start's line; the inner end shifts only when it shares that line
+            // (a mark inserted on start's line does not move columns on any later line).
+            var innerStart = new TextPosition(start.Line, start.Col + mark.Length);
+            var innerEnd = end.Line == start.Line ? new TextPosition(end.Line, end.Col + mark.Length) : end;
+
+            ApplyWrap(edit, position: innerEnd, anchor: innerStart);
+        }
+        else
+        {
+            // No selection: insert the empty pair and land the caret between the marks.
+            var caret = _position;
+            var between = new TextPosition(caret.Line, caret.Col + mark.Length);
+            ApplyWrap(new Edit(caret, string.Empty, mark + mark), position: between, anchor: null);
+        }
+    }
+
+    /// <summary>Applies a wrap splice as one structural undo group and installs the computed post-splice caret/selection.</summary>
+    private void ApplyWrap(Edit edit, TextPosition position, TextPosition? anchor)
+    {
+        // EditKind.Structural is atomic — it never coalesces with adjacent typing, so "one undo restores" holds
+        // and a following keystroke opens a fresh group. The recorded after-state re-covers the inner text on redo.
+        _controller.Apply(edit, EditKind.Structural, State, new CaretState(position, anchor));
+
+        _position = position;
+        _anchor = anchor;
+        _endAffinity = false;
+        _goalCell = -1;
+
+        _controller.NotifyCaretMoved(State);
+        AfterStateChange();
+    }
+
+    /// <summary>Whether the block owning <paramref name="line"/> is a table (the inline-format table guard).</summary>
+    private bool BlockAtLineIsTable(int line)
+    {
+        int blockIndex = Blocks.IndexOfLine(Math.Clamp(line, 0, _buffer.LineCount - 1));
+        return _host.GetTableModel(blockIndex) is not null;
+    }
+
     // ───────────────────────────── table cell editing (M3.WP4) ─────────────────────────────
 
     /// <summary>Routes an edit over a table selection to the controller's cell-clamped <see cref="TableEditingController.Replace"/> (bug 3 — a cross-cell selection never deletes the separating pipe).</summary>
