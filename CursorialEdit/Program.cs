@@ -23,7 +23,7 @@ if (args.Length > 0 && args[0] == "--reveal-demo")
         return 1;
     }
 
-    UIApplication demoApp = UIApplication.CreateBuilder().WithFrameRate(60).UseAlternateScreen().Build();
+    UIApplication demoApp = UIApplication.CreateBuilder().WithFrameRate(60).WithUserConfiguration().UseAlternateScreen().Build();
     IDisposable? demoRestore = null;
     demoApp.Started += (_, _) => demoRestore = SignalRestore.Register();
     try
@@ -107,7 +107,7 @@ if (startupOptions.ReplayPath is { } replayPath)
         return 1;
     }
 
-    UIApplication replayApp = UIApplication.CreateBuilder().WithFrameRate(60).UseAlternateScreen().Build();
+    UIApplication replayApp = UIApplication.CreateBuilder().WithFrameRate(60).WithUserConfiguration().UseAlternateScreen().Build();
     IDisposable? replayRestore = null;
     replayApp.Started += (_, _) => replayRestore = SignalRestore.Register();
     replayApp.Started += (_, _) => _ = RunReplayEventsAsync(replayApp, replayJournal);
@@ -163,6 +163,7 @@ if (startupOptions.JournalRequested)
 
 UIApplication app = UIApplication.CreateBuilder()
                                  .WithFrameRate(60) // §13 targets keystroke→frame < 16 ms; 60 fps pacing to match (Gallery's choice)
+                                 .WithUserConfiguration()
                                  .UseAlternateScreen()
                                  .Build();
 
