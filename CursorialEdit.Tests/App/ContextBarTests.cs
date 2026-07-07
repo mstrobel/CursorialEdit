@@ -2,6 +2,7 @@ using Cursorial.Input;
 using Cursorial.Rendering;
 using Cursorial.Text;
 using Cursorial.UI.Bars;
+using Cursorial.UI.Controls;
 using Cursorial.UI.Testing;
 
 using CursorialEdit.App;
@@ -56,16 +57,17 @@ public sealed class ContextBarTests
         Assert.Single(bar.Items.OfType<BarSeparator>());
         Assert.IsType<BarSeparator>(bar.Items[3]); // the separator sits between the clipboard and format clusters
 
-        // Icon-only: every button carries a glyph on the Icon tier and an explicit EMPTY Content (no label).
+        // Icon-only: every button carries a tiered Icon on the Icon tier and an explicit EMPTY Content (no label).
         foreach (var button in bar.Items.OfType<BarButton>())
         {
-            Assert.IsType<string>(button.Icon);
+            Assert.IsType<Icon>(button.Icon);
             Assert.Equal(string.Empty, button.Content);
         }
     }
 
-    [Fact] // Every strip glyph is a SINGLE width-1 grapheme with NO emoji presentation (mirrors the ribbon's rule).
-    public void EveryContextBarButton_HasAWidthOneTextGlyphIcon()
+    [Fact] // Every strip icon is a tiered Nerd Font Icon: one PUA Glyph codepoint over a width-1, no-VS16 Text floor
+           // (the same rule the ribbon holds — via the shared IconAssert guard).
+    public void EveryContextBarButton_HasATieredNerdFontIconWithAWidthOneTextFloor()
     {
         var (host, shell) = Shell("hello world");
         using var _ = host;
@@ -74,14 +76,8 @@ public sealed class ContextBarTests
         foreach (var button in shell.ContextBar.Items.OfType<BarButton>())
         {
             buttons++;
-            var glyph = Assert.IsType<string>(button.Icon);
-            Assert.Equal(1, GraphemeWidth.ClusterCount(glyph)); // one grapheme cluster
-            Assert.Equal(1, GraphemeWidth.StringWidth(glyph));  // …occupying exactly one cell
-            foreach (var rune in glyph.EnumerateRunes())
-            {
-                Assert.NotEqual(0xFE0F, rune.Value);                 // no VS16 emoji-presentation selector
-                Assert.Equal(1, GraphemeWidth.CodepointWidth(rune)); // every codepoint is width-1
-            }
+            var icon = Assert.IsType<Icon>(button.Icon);
+            TestSupport.IconAssert.NerdFontOverWidthOneFloor(icon);
         }
 
         Assert.Equal(6, buttons);

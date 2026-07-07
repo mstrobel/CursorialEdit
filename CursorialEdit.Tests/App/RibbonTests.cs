@@ -180,11 +180,12 @@ public sealed class RibbonTests
         Assert.NotEqual(true, wrap.IsChecked);
     }
 
-    // ───────────────────────────── icons: every button carries a width-1 text glyph ─────────────────────────────
+    // ───────────────────────────── icons: every button carries a tiered Nerd Font icon over a width-1 floor ─────────────────────────────
 
-    [Fact] // Every ribbon button has a glyph-string Icon that is a SINGLE width-1 grapheme with NO emoji presentation
-           // (no VS16, CodepointWidth == 1) — a predictable 1-cell text symbol, never a 2-wide color-emoji sprite.
-    public void EveryRibbonButton_HasAWidthOneTextGlyphIcon()
+    [Fact] // Every ribbon button carries a tiered Icon: a single Nerd-Font-PUA Glyph codepoint (the nf-md-* icon)
+           // AND a width-1, no-VS16 text-presentation Text floor — the guaranteed single-cell fallback, never a
+           // 2-wide color-emoji sprite. (The opt-in Emoji tier may be a 2-wide sprite; the floor is the disciplined one.)
+    public void EveryRibbonButton_HasATieredNerdFontIconWithAWidthOneTextFloor()
     {
         var (host, shell) = Shell("hi");
         using var _ = host;
@@ -193,17 +194,9 @@ public sealed class RibbonTests
         foreach (var button in AllButtons(shell.Ribbon))
         {
             buttons++;
-            string label = ((BarCommand)button.Command!).Text!;
             object? icon = button.GetValue(BarButton.IconProperty);
-
-            var glyph = Assert.IsType<string>(icon); // the glyph tier is a string; the image tier stays null
-            Assert.Equal(1, GraphemeWidth.ClusterCount(glyph));                          // one grapheme cluster
-            Assert.Equal(1, GraphemeWidth.StringWidth(glyph));                           // …occupying exactly one cell
-            foreach (var rune in glyph.EnumerateRunes())
-            {
-                Assert.NotEqual(0xFE0F, rune.Value);                                     // no VS16 emoji-presentation selector
-                Assert.Equal(1, GraphemeWidth.CodepointWidth(rune));                     // every codepoint is width-1 (not a wide/emoji sprite)
-            }
+            var tiered = Assert.IsType<Icon>(icon); // the icon tier is a Cursorial Icon; the image tier stays null
+            TestSupport.IconAssert.NerdFontOverWidthOneFloor(tiered);
         }
 
         Assert.True(buttons >= 24, $"expected the full button set to carry icons, saw {buttons}");

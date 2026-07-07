@@ -16,15 +16,15 @@ namespace CursorialEdit.App;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Same commands, same glyphs.</b> Every button binds a <see cref="BarCommand"/> whose action calls a REAL
+/// <b>Same commands, same icons.</b> Every button binds a <see cref="BarCommand"/> whose action calls a REAL
 /// operation on the persistent <see cref="EditorControl"/> — the same <see cref="EditorControl.Cut"/>/
 /// <see cref="EditorControl.Copy"/>/<see cref="EditorControl.Paste"/> the ribbon and keyboard use, plus the new
 /// <see cref="EditorControl.Bold"/>/<see cref="EditorControl.Italic"/>/<see cref="EditorControl.InlineCode"/>. The
-/// clipboard glyphs are reused verbatim from <see cref="EditorRibbon"/> (one icon vocabulary); each is a width-1
-/// text-presentation glyph (no VS16), verified by <c>ContextBarTests</c>.
+/// clipboard/format icons come from the shared <see cref="EditorRibbon"/> <c>Icon*</c> factories (one icon
+/// vocabulary — a tiered Nerd Font <see cref="Icon"/> over a width-1 Unicode floor), verified by <c>ContextBarTests</c>.
 /// </para>
 /// <para>
-/// <b>Icon-only.</b> Each button carries the glyph on its <see cref="BarButton.Icon"/> tier and an explicit empty
+/// <b>Icon-only.</b> Each button carries the tiered <see cref="Icon"/> on its <see cref="BarButton.Icon"/> tier and an explicit empty
 /// <see cref="ContentControl.Content"/> — the empty local value keeps the <see cref="BarCommand"/> auto-fill from
 /// grafting the command's <c>Text</c> in as a label, so the strip stays a compact icon row while the command still
 /// carries its label for identity and hover help.
@@ -45,21 +45,21 @@ public sealed class EditorContextBar
         _editor = editor ?? throw new ArgumentNullException(nameof(editor));
 
         Bar = new MiniToolbar();
-        Bar.Items.Add(IconButton(EditorRibbon.IconCut, "Cut", () => _editor.Cut()));
-        Bar.Items.Add(IconButton(EditorRibbon.IconCopy, "Copy", () => _editor.Copy()));
-        Bar.Items.Add(IconButton(EditorRibbon.IconPaste, "Paste", () => _editor.Paste()));
+        Bar.Items.Add(IconButton(EditorRibbon.IconCut(), "Cut", () => _editor.Cut()));
+        Bar.Items.Add(IconButton(EditorRibbon.IconCopy(), "Copy", () => _editor.Copy()));
+        Bar.Items.Add(IconButton(EditorRibbon.IconPaste(), "Paste", () => _editor.Paste()));
         Bar.Items.Add(new BarSeparator());
-        Bar.Items.Add(IconButton(EditorRibbon.IconBold, "Bold", _editor.Bold));
-        Bar.Items.Add(IconButton(EditorRibbon.IconItalic, "Italic", _editor.Italic));
-        Bar.Items.Add(IconButton(EditorRibbon.IconInlineCode, "Inline Code", _editor.InlineCode));
+        Bar.Items.Add(IconButton(EditorRibbon.IconBold(), "Bold", _editor.Bold));
+        Bar.Items.Add(IconButton(EditorRibbon.IconItalic(), "Italic", _editor.Italic));
+        Bar.Items.Add(IconButton(EditorRibbon.IconInlineCode(), "Inline Code", _editor.InlineCode));
     }
 
     /// <summary>The strip itself — attach it with <see cref="MiniToolbar.SetBar"/> on the right-click target.</summary>
     public MiniToolbar Bar { get; }
 
-    // An icon-only bar button: the glyph on the Icon tier, an explicit empty Content so the BarCommand auto-fill
+    // An icon-only bar button: the tiered Icon on the Icon tier, an explicit empty Content so the BarCommand auto-fill
     // never grafts the command Text in as a label, and a BarCommand carrying the display label + running `op`.
-    private BarButton IconButton(string icon, string text, Action op)
+    private BarButton IconButton(Icon icon, string text, Action op)
     {
         // Bool-returning Cut/Copy/Paste are wrapped by the caller as `() => _editor.Xxx()` (the result is discarded —
         // the strip runs the op unconditionally, like the ribbon does, unlike the keybind which bubbles on no-op).

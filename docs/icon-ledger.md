@@ -5,13 +5,17 @@ fallback**; this ledger tracks every icon the editor requests through the framew
 accumulates the **image (PNG) assets to procure** for the `caps-images` tier. Mike procures the PNGs.
 
 Conventions:
-- **NF glyph** — proposed Nerd Font icon name (nf-md-* = Material Design set unless noted). Codepoints
-  deliberately omitted here; they get pinned against the Nerd Fonts cheat sheet when the icon resources
-  are authored (M5), with the single-cell width check the spec's §18.4 confirmation-render describes.
-- **Unicode** — single-width-safe floor glyph (`caps-unicode` tier). **Emoji** — richer fallback, but
-  emoji are **double-width** in the cell grid. Per FB-15 (framework-feedback.md, direction agreed with
-  Mike): the Icon element grows a fourth tier — Glyph → Image → **Emoji** (`caps-emoji`, user opt-in) →
-  Text — so the two columns here map to two distinct tiers rather than one shared floor.
+- **NF glyph** — Nerd Font icon name (nf-md-* = Material Design set unless noted). Codepoints for **wired** rows
+  are pinned (`→ U+Fxxxx`) against Nerd Fonts **glyphnames.json v3.4.0** (the plane-15 PUA-A range the nf-md set
+  occupies, U+F0000–U+F1AF0 — so the string literals need the `\U000Fxxxx` escape, not `\uXXXX`); un-wired rows keep
+  the name only, pinned when they are authored. The single-cell width check the spec's §18.4 confirmation-render
+  describes is enforced on the Text floor by RibbonTests/ContextBarTests' shared `IconAssert` guard.
+- **Unicode** — single-width-safe floor glyph (`caps-unicode` / `Icon.Text` tier). For **wired** rows this column is
+  the ACTUAL wired floor (finalized, width-1, no VS16), which supersedes the provisional glyphs earlier rows carried.
+  **Emoji** — richer `caps-emoji` fallback (opt-in, default present per FB-15); emoji are **double-width** in the
+  cell grid, which is fine on that tier (grid safety is the Icon's 2-cell emoji measurement, not the Text floor).
+  Every wired row now carries all three of Glyph / Emoji / Text (only the Image/PNG tier is still pending).
+  Per FB-15: the Icon element's tier order is Glyph → Image → **Emoji** → Text.
 - **PNG asset** — requested filename for procurement. Transparent background; nominal sizes TBC in M5
   once the image-tier cell budget is fixed (expect a square asset scaled to a 1-cell-high placement on
   the toolbar and a 2-cell-high "large" ribbon placement — final pixel sizes depend on cell metrics; will
@@ -36,24 +40,24 @@ Conventions:
 
 | Command | NF glyph | Unicode | Emoji | PNG asset | Status |
 |---|---|---|---|---|---|
-| Undo | nf-md-undo | ↶ | ↩️ | undo.png | needed |
-| Redo | nf-md-redo | ↷ | ↪️ | redo.png | needed |
-| Cut | nf-md-content_cut | ✂ | ✂️ | cut.png | needed |
-| Copy | nf-md-content_copy | ⿻ (fallback: ▤▤) | 📋 | copy.png | needed |
-| Paste | nf-md-content_paste | ⎀ | 📋 | paste.png | needed |
+| Undo | nf-md-undo → U+F054C | ↶ | ↩️ | undo.png | wired |
+| Redo | nf-md-redo → U+F044E | ↷ | ↪️ | redo.png | wired |
+| Cut | nf-md-content_cut → U+F0190 | ✁ | ✂️ | cut.png | wired |
+| Copy | nf-md-content_copy → U+F018F | ⧉ | 📋 | copy.png | wired |
+| Paste | nf-md-content_paste → U+F0192 | ▤ | 📋 | paste.png | wired |
 | Paste Special (plain) | nf-md-content_paste (+T badge) | ⎀T | 📋 | paste-plain.png | needed |
 | Find | nf-md-magnify | ⌕ | 🔍 | find.png | needed |
 | Replace | nf-md-find_replace | ⌕⇄ | 🔁 | replace.png | needed |
-| Select All | nf-md-select_all | ⬚ | — | select-all.png | needed |
+| Select All | nf-md-select_all → U+F0486 | ⬚ | 🔲 | select-all.png | wired |
 
 ## Format — inline
 
 | Command | NF glyph | Unicode | Emoji | PNG asset | Status |
 |---|---|---|---|---|---|
-| Bold | nf-md-format_bold | **B** (styled letter) | 🅱 | fmt-bold.png | needed |
-| Italic | nf-md-format_italic | *I* (styled letter) | — | fmt-italic.png | needed |
+| Bold | nf-md-format_bold → U+F0264 | ✱ | 🅱 | fmt-bold.png | wired |
+| Italic | nf-md-format_italic → U+F0277 | ⟋ | ✍️ | fmt-italic.png | wired |
 | Strikethrough | nf-md-format_strikethrough_variant | S̶ | — | fmt-strike.png | needed |
-| Inline code | nf-md-code_tags | ⟨⟩ | — | fmt-code.png | needed |
+| Inline code | nf-md-code_tags → U+F0174 | ` | 💻 | fmt-code.png | wired |
 | Link | nf-md-link_variant | ⧉ (fallback: ∞) | 🔗 | link.png | needed |
 | Clear formatting | nf-md-format_clear | Tx | — | fmt-clear.png | needed |
 
@@ -85,23 +89,25 @@ Conventions:
 
 | Command | NF glyph | Unicode | Emoji | PNG asset | Status |
 |---|---|---|---|---|---|
-| Insert row above / below | nf-md-table_row_plus_before / _after | ▤↑ / ▤↓ | — | row-insert-above.png / -below.png | needed |
-| Insert column left / right | nf-md-table_column_plus_before / _after | ▥← / ▥→ | — | col-insert-left.png / -right.png | needed |
-| Delete row / column | nf-md-table_row_remove / table_column_remove | ▤✕ / ▥✕ | — | row-delete.png / col-delete.png | needed |
-| Move row up / down | nf-md-arrow_up_bold_box_outline / down | ⇑ / ⇓ | — | row-up.png / row-down.png | needed |
-| Move column left / right | nf-md-arrow_left_bold_box_outline / right | ⇐ / ⇒ | — | col-left.png / col-right.png | needed |
-| Align left / center / right | nf-md-format_align_left / _center / _right | ⫷ ≡ ⫸ (per-glyph) | — | align-left.png / -center.png / -right.png | needed |
-| Delete table | nf-md-table_remove | ▦✕ | — | table-delete.png | needed |
+| Insert row above / below | nf-md-table_row_plus_before → U+F04F4 / _after → U+F04F3 | ↥ / ↧ | ⬆️ / ⬇️ | row-insert-above.png / -below.png | wired |
+| Insert column left / right | nf-md-table_column_plus_before → U+F04ED / _after → U+F04EC | ↤ / ↦ | ⬅️ / ➡️ | col-insert-left.png / -right.png | wired |
+| Delete row / column | nf-md-table_row_remove → U+F04F5 / table_column_remove → U+F04EE | ⊖ / ⊘ | ❌ / ❌ | row-delete.png / col-delete.png | wired |
+| Move row up / down | nf-md-arrow_up_bold_box_outline → U+F0739 / arrow_down_bold_box_outline → U+F0730 | ↑ / ↓ | 🔼 / 🔽 | row-up.png / row-down.png | wired |
+| Move column left / right | nf-md-arrow_left_bold_box_outline → U+F0733 / arrow_right_bold_box_outline → U+F0736 | ← / → | ◀️ / ▶️ | col-left.png / col-right.png | wired |
+| Align left / center / right | nf-md-format_align_left → U+F0262 / _center → U+F0260 / _right → U+F0263 | ⇤ ↹ ⇥ (per-glyph) | ⬅️ ↔️ ➡️ | align-left.png / -center.png / -right.png | wired |
+| Delete table | nf-md-table_remove → U+F0A76 | ⊗ | 🗑️ | table-delete.png | wired |
+| Clear cell (added — not in original ledger) | nf-md-eraser → U+F01FE | ∅ | 🧹 | clear-cell.png | wired |
 | Cell line break (`<br>`) | nf-md-keyboard_return | ↵ | — | (glyph-only — none) | n/a |
 
 ## View
 
 | Command | NF glyph | Unicode | Emoji | PNG asset | Status |
 |---|---|---|---|---|---|
-| Toggle Rendered/Raw | nf-md-code_tags_check (raw) / nf-md-eye (rendered) | ⌨ / 👁→◉ | 👁 | view-raw.png / view-rendered.png | needed |
+| Toggle Rendered/Raw | nf-md-code_tags_check → U+F0694 (raw) / nf-md-eye → U+F0208 (rendered) | ⌗ (raw wired) / 👁→◉ | ⌨️ (raw) / 👁 (rendered) | view-raw.png / view-rendered.png | wired (raw side) |
 | Toggle Split view | nf-md-view_split_vertical | ◫ | — | view-split.png | needed |
 | Toggle Outline panel | nf-md-file_tree | ⋮≡ | 🌲 | outline.png | needed |
-| Word wrap | nf-md-wrap | ⏎← | — | word-wrap.png | needed |
+| Word wrap | nf-md-wrap → U+F05B6 | ↵ | ↩️ | word-wrap.png | wired |
+| Truncate (table-cell overflow choice — added, not in original ledger) | nf-md-format_text_wrapping_clip → U+F0D0E | … | ✂️ | truncate.png | wired |
 | Theme (dark/light) | nf-md-theme_light_dark | ◐ | 🌓 | theme.png | needed |
 
 ## Content icons (document rendering — §2/§7)
@@ -127,5 +133,18 @@ Conventions:
 2. **Style direction for PNGs** — Tokyo Night-tinted monochrome (recolorable is impossible for PNGs, so
    probably one dark-theme set + one light-theme set) vs full-color; recommend flat single-tint with
    transparency, two variants keyed off `ThemeBase`.
-3. Several Unicode fallbacks above are provisional (marked "fallback:") — final picks happen with the
-   §18.4 width-ruler check when the icon resources are authored.
+3. Unicode fallbacks on **wired** rows are now finalized to the actual `Icon.Text` floor the code carries
+   (verified width-1 / no-VS16 by the `IconAssert` guard). Remaining un-wired rows keep provisional fallbacks
+   (marked "fallback:") — those get finalized with the §18.4 width-ruler check when their icons are authored.
+
+### Codepoints to VERIFY on the Nerd Font (flagged for Mike)
+
+All codepoints below resolved cleanly from Nerd Fonts glyphnames.json v3.4.0 by exact `nf-md-*` name, so none are
+guesses. Two rows use nf-md names that were NOT in the original ledger (I picked them and added the rows); please
+eyeball the rendered glyph:
+- **Clear cell** → `nf-md-eraser` (U+F01FE) — an eraser for "clear the cell to empty".
+- **Truncate** (overflow choice) → `nf-md-format_text_wrapping_clip` (U+F0D0E) — the "text clipped at the cell
+  boundary" icon, the natural counterpart to `nf-md-wrap` for the Wrap⇄Truncate segmented control.
+
+One deliberate emoji-tier deviation from the ledger: the **Raw** toggle wires Emoji `⌨️` (raw source), not the
+row's `👁` (which is the *rendered/eye* side of the same toggle and would read as the opposite of "Raw").

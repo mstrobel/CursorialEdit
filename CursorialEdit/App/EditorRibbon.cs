@@ -23,11 +23,14 @@ namespace CursorialEdit.App;
 /// does not disturb typing.
 /// </para>
 /// <para>
-/// <b>Glyph icons.</b> Every button carries a monochrome, <i>text-presentation</i> glyph on its
-/// <see cref="BarButton.Icon"/> tier (the image tier is left null, per the design). Each glyph is width-1 with
-/// no emoji-presentation selector (no VS16, Emoji=No) — see the <c>Icon*</c> constants — so it renders as a
-/// predictable single terminal cell and never as a 2-wide color-emoji sprite. Verified by
-/// <c>RibbonTests.EveryRibbonButton_HasAWidthOneTextGlyphIcon</c>.
+/// <b>Tiered icons.</b> Every button carries a capability-tiered <see cref="Icon"/> on its
+/// <see cref="BarButton.Icon"/> tier (only the image tier is left null — PNGs procured in M5+): a Nerd Font
+/// Material-Design (<c>nf-md-*</c>) <see cref="Icon.Glyph"/> preferred when <see cref="UIApplication.NerdFontAvailable"/>,
+/// an opt-in color-<see cref="Icon.Emoji"/> tier, and the guaranteed <see cref="Icon.Text"/> floor — the same width-1,
+/// text-presentation Unicode glyph the toolbar carried before the Nerd Font tier landed (no VS16, never a 2-wide
+/// color-emoji sprite). Codepoints are pinned in <c>docs/icon-ledger.md</c> against Nerd Fonts glyphnames.json;
+/// see the <c>Icon*</c> factories (each returns a fresh instance — an <see cref="Icon"/> is a Control and cannot be
+/// double-parented). Verified by <c>RibbonTests.EveryRibbonButton_HasATieredNerdFontIconWithAWidthOneTextFloor</c>.
 /// </para>
 /// <para>
 /// <b>KeyTips / access keys.</b> Every button folds an access-key literal into its <see cref="ContentControl.Content"/>
@@ -65,44 +68,53 @@ namespace CursorialEdit.App;
 /// </remarks>
 public sealed class EditorRibbon : Ribbon
 {
-    // ───────────────────────────── icon glyphs ─────────────────────────────
-    // Monochrome, text-presentation glyphs — each is a SINGLE width-1 grapheme with NO emoji-presentation
-    // (no VS16, Emoji=No, GraphemeWidth.CodepointWidth == 1), so it renders as predictable 1-cell text and never
-    // as a 2-wide color-emoji sprite (which we diagnosed bleeding over popups). The codepoint is spelled out in
-    // each trailing comment; RibbonTests re-verifies width-1/no-VS16 for every one so a bad glyph fails the suite.
-    // Cut/Copy/Paste are `internal` so the right-click MiniToolbar (EditorContextBar) reuses the SAME glyph
-    // vocabulary — one source of truth for the shared clipboard icons across the ribbon and the mini toolbar.
-    internal const string IconCut = "✁";           // U+2701 ✁ upper-blade scissors
-    internal const string IconCopy = "⧉";          // U+29C9 ⧉ two joined squares (duplicate)
-    internal const string IconPaste = "▤";         // U+25A4 ▤ square with horizontal fill (clipboard)
+    // ───────────────────────────── icon tiers ─────────────────────────────
+    // Each command's icon is a capability-tiered Cursorial.UI.Controls.Icon (design doc §12 / the icon ledger):
+    // a Nerd Font Material-Design (nf-md-*) codepoint (Glyph — shown when UIApplication.NerdFontAvailable), an
+    // opt-in color-emoji tier where the ledger gives one, and the guaranteed single-width Unicode floor (Text) —
+    // the SAME width-1, text-presentation glyph the toolbar carried before the Nerd Font tier landed (no VS16,
+    // never a 2-wide color-emoji sprite). The Glyph codepoints are pinned in docs/icon-ledger.md against Nerd
+    // Fonts glyphnames.json v3.4.0; every one sits in the plane-15 PUA-A (U+F0000…) range, so they need the
+    // \U000Fxxxx 8-digit escape (NOT \uXXXX, which stops at U+FFFF). RibbonTests re-verifies every Glyph is one
+    // PUA codepoint and every Text floor is a width-1/no-VS16 grapheme, so a bad codepoint fails the suite.
+    //
+    // An Icon is a Control and cannot be double-parented, so each of these is a FACTORY returning a FRESH instance
+    // per button (some icons are placed on more than one live button — e.g. Wrap on both the View toggle and the
+    // Overflow choice). The clipboard/format factories are `internal` so the right-click MiniToolbar
+    // (EditorContextBar) shares the SAME icon vocabulary as the ribbon without sharing an instance.
+    internal static Icon IconCut() => Nf("\U000F0190", "✁", "✂️");    // nf-md-content_cut U+F0190 · floor U+2701 ✁
+    internal static Icon IconCopy() => Nf("\U000F018F", "⧉", "📋");    // nf-md-content_copy U+F018F · floor U+29C9 ⧉
+    internal static Icon IconPaste() => Nf("\U000F0192", "▤", "📋");   // nf-md-content_paste U+F0192 · floor U+25A4 ▤
+    internal static Icon IconBold() => Nf("\U000F0264", "✱", "🅱");    // nf-md-format_bold U+F0264 · floor U+2731 ✱
+    internal static Icon IconItalic() => Nf("\U000F0277", "⟋", "✍️");  // nf-md-format_italic U+F0277 · floor U+27CB ⟋
+    internal static Icon IconInlineCode() => Nf("\U000F0174", "`", "💻"); // nf-md-code_tags U+F0174 · floor U+0060 `
+    private static Icon IconUndo() => Nf("\U000F054C", "↶", "↩️");     // nf-md-undo U+F054C · floor U+21B6 ↶
+    private static Icon IconRedo() => Nf("\U000F044E", "↷", "↪️");     // nf-md-redo U+F044E · floor U+21B7 ↷
+    private static Icon IconSelectAll() => Nf("\U000F0486", "⬚", "🔲"); // nf-md-select_all U+F0486 · floor U+2B1A ⬚
+    private static Icon IconInsertRowAbove() => Nf("\U000F04F4", "↥", "⬆️"); // nf-md-table_row_plus_before U+F04F4 · floor U+21A5 ↥
+    private static Icon IconInsertRowBelow() => Nf("\U000F04F3", "↧", "⬇️"); // nf-md-table_row_plus_after U+F04F3 · floor U+21A7 ↧
+    private static Icon IconInsertColLeft() => Nf("\U000F04ED", "↤", "⬅️");  // nf-md-table_column_plus_before U+F04ED · floor U+21A4 ↤
+    private static Icon IconInsertColRight() => Nf("\U000F04EC", "↦", "➡️"); // nf-md-table_column_plus_after U+F04EC · floor U+21A6 ↦
+    private static Icon IconDeleteRow() => Nf("\U000F04F5", "⊖", "❌");  // nf-md-table_row_remove U+F04F5 · floor U+2296 ⊖
+    private static Icon IconDeleteCol() => Nf("\U000F04EE", "⊘", "❌");  // nf-md-table_column_remove U+F04EE · floor U+2298 ⊘
+    private static Icon IconDeleteTable() => Nf("\U000F0A76", "⊗", "🗑️"); // nf-md-table_remove U+F0A76 · floor U+2297 ⊗
+    private static Icon IconMoveRowUp() => Nf("\U000F0739", "↑", "🔼");  // nf-md-arrow_up_bold_box_outline U+F0739 · floor U+2191 ↑
+    private static Icon IconMoveRowDown() => Nf("\U000F0730", "↓", "🔽"); // nf-md-arrow_down_bold_box_outline U+F0730 · floor U+2193 ↓
+    private static Icon IconMoveColLeft() => Nf("\U000F0733", "←", "◀️"); // nf-md-arrow_left_bold_box_outline U+F0733 · floor U+2190 ←
+    private static Icon IconMoveColRight() => Nf("\U000F0736", "→", "▶️"); // nf-md-arrow_right_bold_box_outline U+F0736 · floor U+2192 →
+    private static Icon IconAlignLeft() => Nf("\U000F0262", "⇤", "⬅️");  // nf-md-format_align_left U+F0262 · floor U+21E4 ⇤
+    private static Icon IconAlignCenter() => Nf("\U000F0260", "↹", "↔️"); // nf-md-format_align_center U+F0260 · floor U+21B9 ↹
+    private static Icon IconAlignRight() => Nf("\U000F0263", "⇥", "➡️"); // nf-md-format_align_right U+F0263 · floor U+21E5 ⇥
+    private static Icon IconClearCell() => Nf("\U000F01FE", "∅", "🧹");  // nf-md-eraser U+F01FE · floor U+2205 ∅ (ledger row added)
+    private static Icon IconRaw() => Nf("\U000F0694", "⌗", "⌨️");       // nf-md-code_tags_check U+F0694 · floor U+2317 ⌗
+    private static Icon IconWrap() => Nf("\U000F05B6", "↵", "↩️");      // nf-md-wrap U+F05B6 · floor U+21B5 ↵
+    private static Icon IconTruncate() => Nf("\U000F0D0E", "…", "✂️");  // nf-md-format_text_wrapping_clip U+F0D0E · floor U+2026 … (ledger row added)
 
-    // Inline-format glyphs (M4 slice) — shared with the MiniToolbar today, and the glyphs the ribbon will use when
-    // it surfaces Bold/Italic/InlineCode later. Width-1 text-presentation like the rest (no VS16); the deliberate
-    // avoidance of the math-alphanumeric 𝐁/𝐼 (which some terminals render 2 cells wide) is why these are symbols.
-    internal const string IconBold = "✱";          // U+2731 ✱ heavy asterisk (heavy weight ⇒ bold; the ** marker)
-    internal const string IconItalic = "⟋";        // U+27CB ⟋ rising diagonal (a slant ⇒ italic)
-    internal const string IconInlineCode = "`";    // U+0060 ` grave accent — the literal inline-code marker
-    private const string IconUndo = "↶";           // U+21B6 ↶ anticlockwise top semicircle arrow
-    private const string IconRedo = "↷";           // U+21B7 ↷ clockwise top semicircle arrow
-    private const string IconSelectAll = "⬚";      // U+2B1A ⬚ dotted square (selection marquee)
-    private const string IconInsertRowAbove = "↥"; // U+21A5 ↥ upwards arrow from bar
-    private const string IconInsertRowBelow = "↧"; // U+21A7 ↧ downwards arrow from bar
-    private const string IconInsertColLeft = "↤";  // U+21A4 ↤ leftwards arrow from bar
-    private const string IconInsertColRight = "↦"; // U+21A6 ↦ rightwards arrow from bar
-    private const string IconDeleteRow = "⊖";      // U+2296 ⊖ circled minus
-    private const string IconDeleteCol = "⊘";      // U+2298 ⊘ circled division slash
-    private const string IconDeleteTable = "⊗";    // U+2297 ⊗ circled times
-    private const string IconMoveRowUp = "↑";      // U+2191 ↑ upwards arrow
-    private const string IconMoveRowDown = "↓";    // U+2193 ↓ downwards arrow
-    private const string IconMoveColLeft = "←";    // U+2190 ← leftwards arrow
-    private const string IconMoveColRight = "→";   // U+2192 → rightwards arrow
-    private const string IconAlignLeft = "⇤";      // U+21E4 ⇤ leftwards arrow to bar
-    private const string IconAlignCenter = "↹";    // U+21B9 ↹ opposing arrows to a central bar (centered)
-    private const string IconAlignRight = "⇥";     // U+21E5 ⇥ rightwards arrow to bar
-    private const string IconClearCell = "∅";      // U+2205 ∅ empty set (clear to empty)
-    private const string IconRaw = "⌗";            // U+2317 ⌗ viewdata square (markdown source)
-    private const string IconWrap = "↵";           // U+21B5 ↵ downwards arrow with corner leftwards (wrap/return)
-    private const string IconTruncate = "…";       // U+2026 … horizontal ellipsis (the truncation marker)
+    // Builds a fresh tiered Icon: the Nerd Font Glyph (width-1), the color-Emoji tier (opt-in caps-emoji — a 2-wide
+    // emoji is fine here; the width-1 discipline is the Text tier's), and the width-1 Unicode Text floor. Image tier
+    // stays null (PNGs procured in M5+). GlyphWidth is 1 for every nf-md icon.
+    private static Icon Nf(string glyph, string text, string emoji)
+        => new() { Glyph = glyph, GlyphWidth = 1, Text = text, Emoji = emoji };
 
     private readonly EditorControl _editor;
 
@@ -181,19 +193,19 @@ public sealed class EditorRibbon : Ribbon
 
     private RibbonTab BuildHomeTab()
     {
-        var paste = Button("_Paste", IconPaste, () => _editor.Paste(), "Ctrl+V");
+        var paste = Button("_Paste", IconPaste(), () => _editor.Paste(), "Ctrl+V");
         SetButtonSize(paste, RibbonButtonSize.Large); // the signature large glyph-over-label button
 
         return Tab("Home", "H",
             Group("Clipboard", "C",
-                Button("_Cut", IconCut, () => _editor.Cut(), "Ctrl+X"),
-                Button("C_opy", IconCopy, () => _editor.Copy(), "Ctrl+C"),
+                Button("_Cut", IconCut(), () => _editor.Cut(), "Ctrl+X"),
+                Button("C_opy", IconCopy(), () => _editor.Copy(), "Ctrl+C"),
                 paste),
             Group("Undo", "U",
-                Button("_Undo", IconUndo, () => _editor.Undo(), "Ctrl+Z"),
-                Button("_Redo", IconRedo, () => _editor.Redo(), "Ctrl+Y")),
+                Button("_Undo", IconUndo(), () => _editor.Undo(), "Ctrl+Z"),
+                Button("_Redo", IconRedo(), () => _editor.Redo(), "Ctrl+Y")),
             Group("Edit", "E",
-                Button("_Select All", IconSelectAll, _editor.SelectAll, "Ctrl+A")));
+                Button("_Select All", IconSelectAll(), _editor.SelectAll, "Ctrl+A")));
     }
 
     // ───────────────────────────── Table ─────────────────────────────
@@ -205,37 +217,37 @@ public sealed class EditorRibbon : Ribbon
         // stay always-enabled; the ops themselves no-op safely off a table.
         return Tab("Table", "T",
             Group("Insert", "I",
-                Button("Row _Above", IconInsertRowAbove, _editor.TableInsertRowAbove, "Alt+↑"),
-                Button("Row _Below", IconInsertRowBelow, _editor.TableInsertRowBelow, "Alt+↓"),
-                Button("Column _Left", IconInsertColLeft, _editor.TableInsertColumnLeft),
-                Button("Column _Right", IconInsertColRight, _editor.TableInsertColumnRight)),
+                Button("Row _Above", IconInsertRowAbove(), _editor.TableInsertRowAbove, "Alt+↑"),
+                Button("Row _Below", IconInsertRowBelow(), _editor.TableInsertRowBelow, "Alt+↓"),
+                Button("Column _Left", IconInsertColLeft(), _editor.TableInsertColumnLeft),
+                Button("Column _Right", IconInsertColRight(), _editor.TableInsertColumnRight)),
             Group("Delete", "D",
-                Button("Delete _Row", IconDeleteRow, _editor.TableDeleteRow),
-                Button("Delete _Column", IconDeleteCol, _editor.TableDeleteColumn),
-                Button("Delete _Table", IconDeleteTable, _editor.TableDelete)),
+                Button("Delete _Row", IconDeleteRow(), _editor.TableDeleteRow),
+                Button("Delete _Column", IconDeleteCol(), _editor.TableDeleteColumn),
+                Button("Delete _Table", IconDeleteTable(), _editor.TableDelete)),
             Group("Move", "M",
-                Button("Row _Up", IconMoveRowUp, _editor.TableMoveRowUp),
-                Button("Row _Down", IconMoveRowDown, _editor.TableMoveRowDown),
-                Button("Column _Left", IconMoveColLeft, _editor.TableMoveColumnLeft),
-                Button("Column _Right", IconMoveColRight, _editor.TableMoveColumnRight)),
+                Button("Row _Up", IconMoveRowUp(), _editor.TableMoveRowUp),
+                Button("Row _Down", IconMoveRowDown(), _editor.TableMoveRowDown),
+                Button("Column _Left", IconMoveColLeft(), _editor.TableMoveColumnLeft),
+                Button("Column _Right", IconMoveColRight(), _editor.TableMoveColumnRight)),
             Group("Cells", "C",
                 // Alignment: three actions calling TableSetColumnAlignment. A reflecting toggle-set (checked =
                 // the caret column's current alignment) is a follow-up — it reads caret-in-table state, FB-27's job.
-                Button("Align _Left", IconAlignLeft, () => _editor.TableSetColumnAlignment(ColumnAlignment.Left)),
-                Button("Align C_enter", IconAlignCenter, () => _editor.TableSetColumnAlignment(ColumnAlignment.Center)),
-                Button("Align _Right", IconAlignRight, () => _editor.TableSetColumnAlignment(ColumnAlignment.Right)),
+                Button("Align _Left", IconAlignLeft(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Left)),
+                Button("Align C_enter", IconAlignCenter(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Center)),
+                Button("Align _Right", IconAlignRight(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Right)),
                 new BarSeparator(),
-                Button("_Clear Cell", IconClearCell, _editor.TableClearCell)));
+                Button("_Clear Cell", IconClearCell(), _editor.TableClearCell)));
     }
 
     // ───────────────────────────── View ─────────────────────────────
 
     private RibbonTab BuildViewTab()
     {
-        var raw = new BarToggleButton { Content = "_Raw", Icon = IconRaw, Command = _rawCommand, CommandParameter = _rawChecked };
+        var raw = new BarToggleButton { Content = "_Raw", Icon = IconRaw(), Command = _rawCommand, CommandParameter = _rawChecked };
 
         var wrapChecked = new CheckableCommandParameter(_editor.EditWrapEnabled);
-        var wrap = Toggle("_Wrap", IconWrap, wrapChecked, () =>
+        var wrap = Toggle("_Wrap", IconWrap(), wrapChecked, () =>
         {
             _editor.EditWrapEnabled = !_editor.EditWrapEnabled;
             wrapChecked.IsChecked = _editor.EditWrapEnabled; // re-read the real state (the command owns the checked bit)
@@ -250,11 +262,11 @@ public sealed class EditorRibbon : Ribbon
         _overflowTruncateCommand = new BarCommand(() => Run(() => SetOverflowMode(TableOverflow.Truncate))) { Text = "Truncate", IsCheckable = true };
         var overflowWrap = new BarToggleButton
         {
-            Content = "_Wrap", Icon = IconWrap, Command = _overflowWrapCommand, CommandParameter = _overflowWrapChecked,
+            Content = "_Wrap", Icon = IconWrap(), Command = _overflowWrapCommand, CommandParameter = _overflowWrapChecked,
         };
         var overflowTruncate = new BarToggleButton
         {
-            Content = "_Truncate", Icon = IconTruncate, Command = _overflowTruncateCommand, CommandParameter = _overflowTruncateChecked,
+            Content = "_Truncate", Icon = IconTruncate(), Command = _overflowTruncateCommand, CommandParameter = _overflowTruncateChecked,
         };
 
         return Tab("View", "V",
@@ -294,9 +306,9 @@ public sealed class EditorRibbon : Ribbon
 
     // `content` folds an access-key literal (e.g. "_Paste"): it underlines the mnemonic, registers the Alt+letter
     // accelerator, and seeds the KeyTip badge. The command's Text is the clean display label (underscore stripped)
-    // used for tooltips and command identity; `icon` is a width-1 text glyph (set directly on the control, so the
+    // used for tooltips and command identity; `icon` is a tiered Icon (set directly on the control, so the
     // BarCommand auto-fill preserves it).
-    private BarButton Button(string content, string icon, Action op, string? gesture = null)
+    private BarButton Button(string content, Icon icon, Action op, string? gesture = null)
     {
         // Bool-returning ops (Copy/Cut/Paste/Undo/Redo) are wrapped by the caller as `() => _editor.Xxx()`
         // — the result is discarded (the ribbon runs the op unconditionally, unlike the keybind which bubbles).
@@ -304,7 +316,7 @@ public sealed class EditorRibbon : Ribbon
         return new BarButton { Content = content, Icon = icon, Command = command };
     }
 
-    private BarToggleButton Toggle(string content, string icon, CheckableCommandParameter checkedState, Action toggle, string? gesture = null)
+    private BarToggleButton Toggle(string content, Icon icon, CheckableCommandParameter checkedState, Action toggle, string? gesture = null)
     {
         var command = new BarCommand(() => Run(toggle)) { Text = AccessText.Parse(content).Text, InputGestureText = gesture, IsCheckable = true };
         return new BarToggleButton { Content = content, Icon = icon, Command = command, CommandParameter = checkedState };
