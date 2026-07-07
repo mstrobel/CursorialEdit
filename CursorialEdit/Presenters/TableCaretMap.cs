@@ -116,6 +116,14 @@ internal sealed class TableCaretMap : ICaretMap
                         continue;
                     }
 
+                    // A non-active truncated cell maps only its DRAWN prefix (the TruncateCell fragment) — no
+                    // column-clamped click-box (deferred #4, verified no-op). The ellipsis reserves one cell, so a
+                    // truncated cell's drawn width is always ≥ columnWidth − 1: at most ONE padding cell inside the
+                    // column box is left uncovered, and it sits distance 1 from this cell's prefix vs. distance ≥ 2
+                    // from the neighbour cell's content, so NearestCell's nearest-column snap keeps a click there in
+                    // THIS cell. Clamping the stop to the whole column would land identically — hence unneeded. (A
+                    // click into the neighbour's own drawn text still resolves to the neighbour: TableOverflowTests
+                    // .Truncate_ClickOnCellRightOfAWideCell…, and the padding case: …_LandsInTheTruncatedCell.)
                     AddFragmentStops(stops, metrics, c, visual.Cell(c));
                 }
 

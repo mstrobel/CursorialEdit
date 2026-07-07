@@ -67,19 +67,26 @@ public sealed class TableModel
     private readonly Column[] _columns;
     private readonly Row[] _rows;
 
-    // Per-cell projections (Decision 9 — per-cell reveal), computed once at Build (the table is realized, so
-    // every cell is about to render): the cell-relative inline runs and the marks-hidden formatted display.
-    // A plain cell's format is cheap (no display string); only a cell carrying an inline construct projects.
-    private readonly IReadOnlyList<InlineRun>[][] _cellRuns;
+    // Per-cell formatted (marks-hidden) projections (Decision 9 — per-cell reveal), computed once at Build (the
+    // table is realized, so every cell is about to render). A plain cell's format is cheap (no display string);
+    // only a cell carrying an inline construct projects. The per-cell inline runs feeding these are NOT retained
+    // (#6) — the test-only CellInlineRuns accessor re-derives them from _table on demand.
     private readonly CellFormat[][] _formats;
 
-    private TableModel(string source, Column[] columns, Row[] rows, IReadOnlyList<InlineRun>[][] cellRuns, CellFormat[][] formats)
+    // The backing Markdig table + block origin, retained so the test-only CellInlineRuns can re-project a cell's
+    // inline AST on demand (the table is already alive via the block for this model's parse generation, so this
+    // aliases an existing object — it is not a second per-cell projection kept for the document's lifetime).
+    private readonly MdTable? _table;
+    private readonly int _origin;
+
+    private TableModel(string source, Column[] columns, Row[] rows, CellFormat[][] formats, MdTable? table, int origin)
     {
         _source = source;
         _columns = columns;
         _rows = rows;
-        _cellRuns = cellRuns;
         _formats = formats;
+        _table = table;
+        _origin = origin;
     }
 
     /// <summary>The number of logical rows (header + body; the delimiter row is not a row).</summary>
@@ -158,10 +165,18 @@ public sealed class TableModel
     /// from <see cref="CellContentRange"/>'s Start), so they index the cell's trimmed content directly. Empty
     /// for a cell with no inline content (a blank/ragged cell). Feeds the formatted (marks-hidden) rendering.
     /// </summary>
-    public IReadOnlyList<InlineRun> CellInlineRuns(int row, int column) => _cellRuns[row][column];
+    public IReadOnlyList<InlineRun> CellInlineRuns(int row, int column)
+    {
+        // #6: not retained. The projected runs are consumed at Build time (to build each CellFormat) and thrown
+        // away; only this test-only accessor still needs them, so it re-derives on demand from the retained Markdig
+        // table — identical to what Build projected — rather than the model carrying a per-cell run array for life.
+        var node = CellNodeAt(row, column);
+        if (node is null)
+            return [];
 
-    /// <summary>The formatted (marks-hidden) projection of the cell at (<paramref name="row"/>, <paramref name="column"/>) — the layout/render input for an inactive cell (Decision 9).</summary>
-    internal CellFormat Format(int row, int column) => _formats[row][column];
+        var (contentStart, content) = Content(_rows[row].Cells[column]);
+        return ProjectCellRuns(node, _origin, contentStart, content.Length);
+    }
 
     /// <summary>
     /// The block-relative source range <c>[Start, End)</c> of the trimmed <b>content</b> of the cell at
@@ -556,17 +571,16 @@ public sealed class TableModel
         // Per-cell inline projection + formatted display (Decision 9): cell-relative inline runs projected the
         // same way Block.RealizeInlineRuns does, then the marks-hidden display each inactive cell renders. A
         // plain cell (no inline construct) projects cheaply and keeps its raw width — no display string is built.
-        var cellRuns = new IReadOnlyList<InlineRun>[rowSpans.Count][];
+        // The projected runs are consumed by CellFormat.Build and then dropped (#6): only the formatted result is
+        // retained; the test-only CellInlineRuns re-derives the runs from the Markdig table when asked.
         var formats = new CellFormat[rowSpans.Count][];
         for (var i = 0; i < rowSpans.Count; i++)
         {
-            cellRuns[i] = new IReadOnlyList<InlineRun>[columnCount];
             formats[i] = new CellFormat[columnCount];
             for (var c = 0; c < columnCount; c++)
             {
                 var (contentStart, content) = ContentOf(blockSource, rowSpans[i][c]);
                 var runs = ProjectCellRuns(rowNodes[i][c], origin, contentStart, content.Length);
-                cellRuns[i][c] = runs;
                 formats[i][c] = CellFormat.Build(content, contentStart, runs);
             }
         }
@@ -584,7 +598,44 @@ public sealed class TableModel
         for (var i = 0; i < rowSpans.Count; i++)
             rows[i] = new Row(rowSpans[i], headerFlags[i], rowLines[i]);
 
-        return new TableModel(blockSource, columns, rows, cellRuns, formats);
+        return new TableModel(blockSource, columns, rows, formats, table, origin);
+    }
+
+    /// <summary>
+    /// The Markdig cell node backing logical (<paramref name="row"/>, <paramref name="column"/>), or
+    /// <see langword="null"/> for a ragged-padding column (beyond the row's real cells). Walks the retained
+    /// <see cref="_table"/> in the same order <see cref="Build"/> collected the rows/cells, so the indexing
+    /// matches <c>_rows</c> exactly — the on-demand basis for <see cref="CellInlineRuns"/> (#6).
+    /// </summary>
+    private MdTableCell? CellNodeAt(int row, int column)
+    {
+        if (_table is null || row < 0 || column < 0)
+            return null;
+
+        int r = 0;
+        foreach (var rowObj in _table)
+        {
+            if (rowObj is not MdTableRow mdRow)
+                continue;
+            if (r == row)
+            {
+                int c = 0;
+                foreach (var cellObj in mdRow)
+                {
+                    if (cellObj is not MdTableCell mdCell)
+                        continue;
+                    if (c == column)
+                        return mdCell;
+                    c++;
+                }
+
+                return null; // a ragged/padding column — no backing node (matches Build's null padding)
+            }
+
+            r++;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -779,18 +830,70 @@ public sealed class TableModel
     private CellFragment[] WrapCell(CellSpan span, int width)
     {
         var (srcStart, text) = Content(span);
+        return WrapContent(text, width, srcStart, format: null);
+    }
+
+    /// <summary>
+    /// Clips one cell's trimmed content to <paramref name="width"/> cells for <see cref="TableOverflow.Truncate"/>
+    /// (§5.6): the single visual-row fragment the cell occupies. A cell that fits is the whole content unchanged;
+    /// an over-wide cell keeps the longest grapheme-cluster <b>prefix</b> fitting <c>width − 1</c> cells (never
+    /// splitting a wide cluster) and sets <see cref="CellFragment.Ellipsis"/> so the presenter appends the one-cell
+    /// <c>…</c> — total drawn width ≤ <paramref name="width"/>. The prefix source range still tiles from the cell
+    /// start, so a caret in the visible prefix lands correctly.
+    /// </summary>
+    private CellFragment TruncateCell(CellSpan span, int width)
+    {
+        var (srcStart, text) = Content(span);
+        return TruncateContent(text, width, srcStart, format: null);
+    }
+
+    // ───────────────────────────── formatted (marks-hidden) content + wrapping ─────────────────────────────
+
+    /// <summary>
+    /// Word-wraps a cell's <b>formatted</b> (marks-hidden) display to <paramref name="width"/> cells (Decision 9),
+    /// the marks-hidden analogue of <see cref="WrapCell"/>: the wrap runs over the <see cref="CellFormat.Display"/>
+    /// (narrower than the raw content), and each visual-row fragment carries its <see cref="CellStyledRun"/>s so the
+    /// presenter draws the styled content (bold/italic/code/link) without re-deriving the inline AST, and the caret
+    /// map builds its per-run stops from the same fragments. Reuses the same framework word-wrap the prose blocks use.
+    /// </summary>
+    private CellFragment[] WrapCellFormatted(CellFormat format, int width) =>
+        WrapContent(format.Display, width, format.ContentStart, format);
+
+    /// <summary>
+    /// Clips a cell's <b>formatted</b> (marks-hidden) display to <paramref name="width"/> cells for
+    /// <see cref="TableOverflow.Truncate"/> (§5.6) — the marks-hidden analogue of <see cref="TruncateCell"/>:
+    /// a fitting cell renders whole; an over-wide one keeps the widest whole-cluster display prefix fitting
+    /// <c>width − 1</c> and sets <see cref="CellFragment.Ellipsis"/>. The fragment carries its styled runs.
+    /// </summary>
+    private CellFragment TruncateCellFormatted(CellFormat format, int width) =>
+        TruncateContent(format.Display, width, format.ContentStart, format);
+
+    // ───────────────────────────── shared wrap/truncate core (raw ≡ formatted, #5) ─────────────────────────────
+
+    /// <summary>
+    /// The single owner of cell wrapping (M3 risk a), shared by the raw (<see cref="WrapCell"/>) and formatted
+    /// (<see cref="WrapCellFormatted"/>) paths so their caret-mappings can't drift. <paramref name="text"/> is the
+    /// string that renders — the raw trimmed content, or the marks-hidden <see cref="CellFormat.Display"/> — and
+    /// <paramref name="format"/> selects the mode: <see langword="null"/> (raw) maps a text index 1:1 onto source
+    /// (<c>contentSrcStart + index</c>) and emits plain fragments; a non-null format maps through
+    /// <see cref="CellFormat.SourceOf"/> (so hidden marks collapse onto the adjacent content) and attaches each
+    /// fragment's <see cref="CellStyledRun"/>s. A cell renders TRIMMED content per visual row (unlike prose soft-wrap,
+    /// which keeps a trailing space): each segment trims trailing whitespace from its RENDERED width (right/center
+    /// wrapped lines stay flush; a word that exactly fills the column doesn't spill the following space as a blank
+    /// row), while its SOURCE range spans the full segment so the fragments tile the cell and the caret round-trips.
+    /// An empty cell yields one empty fragment so it still occupies one visual row.
+    /// </summary>
+    private CellFragment[] WrapContent(string text, int width, int contentSrcStart, CellFormat? format)
+    {
         if (text.Length == 0)
-            return [new CellFragment(srcStart, 0, 0)];
+            return [new CellFragment(contentSrcStart, 0, 0)];
+
+        int SourceAt(int index) => format is null ? contentSrcStart + index : format.SourceOf(index);
 
         int budget = Math.Max(1, width);
         var wrapped = TextLayout.Build(text, budget, WrapMode.WordWrap);
         var textSpan = text.AsSpan();
 
-        // A cell renders TRIMMED content per visual row — unlike prose, whose soft wrap keeps a trailing space.
-        // For each wrapped segment we trim trailing whitespace from the RENDERED width (so a right/center-
-        // aligned wrapped line stays flush to its edge, and a word that exactly fills the column doesn't spill
-        // the following space as its own blank row); the SOURCE range still spans the full segment so the
-        // fragments tile the cell and the caret round-trips (the trimmed space stays attributed to its source).
         var fragments = new List<CellFragment>(wrapped.LineCount);
         for (var v = 0; v < wrapped.LineCount; v++)
         {
@@ -805,34 +908,50 @@ public sealed class TableModel
             {
                 // A whitespace-only segment (the lone space between two exactly-fitting words): don't emit a
                 // blank visual row — extend the previous fragment's source to absorb it, keeping tiling intact.
-                fragments[^1] = fragments[^1] with { SrcLength = srcStart + end - fragments[^1].SrcStart };
+                var prev = fragments[^1];
+                fragments[^1] = prev with { SrcLength = SourceAt(end) - prev.SrcStart };
                 continue;
             }
 
-            int renderWidth = wrapped.LineWidth(v) - (end - renderEnd); // each trimmed trailing char is a width-1 space/tab
-            fragments.Add(new CellFragment(srcStart + start, end - start, renderWidth));
+            // Render width of the trimmed segment [start, renderEnd), preserving each mode's original computation
+            // (they diverge only on a trailing TAB, which GraphemeWidth measures as 0 but the raw subtraction as 1):
+            // raw subtracts the trimmed trailing chars from the wrapped line width; formatted measures the display
+            // slice directly (its trailing marks already collapsed). Both are the drawn cell width.
+            int renderWidth = format is null
+                ? wrapped.LineWidth(v) - (end - renderEnd)
+                : CellsBetween(text, start, renderEnd);
+            var runs = format is null ? null : StyledRunsOf(format, start, renderEnd);
+            int fragSrcStart = SourceAt(start);
+            fragments.Add(new CellFragment(fragSrcStart, SourceAt(end) - fragSrcStart, renderWidth) { StyledRuns = runs });
         }
 
-        return fragments.Count > 0 ? [.. fragments] : [new CellFragment(srcStart, text.Length, 0)];
+        // Unreachable defensive fallback: non-empty text yields LineCount ≥ 1 and the first segment always emits a
+        // fragment (the absorb branch requires Count > 0), so fragments is non-empty here whenever text is non-empty.
+        return fragments.Count > 0 ? [.. fragments] : [new CellFragment(contentSrcStart, 0, 0)];
     }
 
     /// <summary>
-    /// Clips one cell's trimmed content to <paramref name="width"/> cells for <see cref="TableOverflow.Truncate"/>
-    /// (§5.6): the single visual-row fragment the cell occupies. A cell that fits is the whole content unchanged;
-    /// an over-wide cell keeps the longest grapheme-cluster <b>prefix</b> fitting <c>width − 1</c> cells (never
-    /// splitting a wide cluster) and sets <see cref="CellFragment.Ellipsis"/> so the presenter appends the one-cell
-    /// <c>…</c> — total drawn width ≤ <paramref name="width"/>. The prefix source range still tiles from the cell
-    /// start, so a caret in the visible prefix lands correctly.
+    /// The single owner of cell truncation (§5.6), shared by the raw (<see cref="TruncateCell"/>) and formatted
+    /// (<see cref="TruncateCellFormatted"/>) paths. <paramref name="text"/> and <paramref name="format"/> select the
+    /// mode exactly as <see cref="WrapContent"/> does. A fitting cell renders whole; an over-wide cell keeps the
+    /// widest whole-cluster prefix fitting <c>width − 1</c> cells (never splitting a wide cluster) and flags
+    /// <see cref="CellFragment.Ellipsis"/> for the presenter's trailing <c>…</c>. The prefix source range tiles from
+    /// the cell start, so a caret in the visible prefix lands correctly.
     /// </summary>
-    private CellFragment TruncateCell(CellSpan span, int width)
+    private CellFragment TruncateContent(string text, int width, int contentSrcStart, CellFormat? format)
     {
-        var (srcStart, text) = Content(span);
         if (text.Length == 0)
-            return new CellFragment(srcStart, 0, 0);
+            return new CellFragment(contentSrcStart, 0, 0);
 
-        int fullWidth = GraphemeWidth.StringWidth(text);
+        int SourceAt(int index) => format is null ? contentSrcStart + index : format.SourceOf(index);
+        IReadOnlyList<CellStyledRun>? RunsUpTo(int len) => format is null ? null : StyledRunsOf(format, 0, len);
+
+        int fullWidth = format?.DisplayWidth ?? GraphemeWidth.StringWidth(text); // == StringWidth(text) either way
         if (fullWidth <= width)
-            return new CellFragment(srcStart, text.Length, fullWidth); // fits — no clip, no ellipsis
+        {
+            int fitStart = SourceAt(0);
+            return new CellFragment(fitStart, SourceAt(text.Length) - fitStart, fullWidth) { StyledRuns = RunsUpTo(text.Length) };
+        }
 
         // Reserve one cell for the … and keep the widest whole-cluster prefix that still fits the remainder.
         int budget = Math.Max(0, width - EllipsisWidth);
@@ -847,84 +966,8 @@ public sealed class TableModel
             len += clusters.Current.Length;
         }
 
-        return new CellFragment(srcStart, len, used) { Ellipsis = true };
-    }
-
-    // ───────────────────────────── formatted (marks-hidden) content + wrapping ─────────────────────────────
-
-    /// <summary>
-    /// Word-wraps a cell's <b>formatted</b> (marks-hidden) display to <paramref name="width"/> cells (Decision 9),
-    /// the marks-hidden analogue of <see cref="WrapCell"/>: the wrap runs over the <see cref="CellFormat.Display"/>
-    /// (narrower than the raw content), and each visual-row fragment carries its <see cref="CellStyledRun"/>s so the
-    /// presenter draws the styled content (bold/italic/code/link) without re-deriving the inline AST, and the caret
-    /// map builds its per-run stops from the same fragments. Reuses the same framework word-wrap the prose blocks use.
-    /// </summary>
-    private CellFragment[] WrapCellFormatted(CellFormat format, int width)
-    {
-        string display = format.Display;
-        if (display.Length == 0)
-            return [new CellFragment(format.ContentStart, 0, 0)];
-
-        int budget = Math.Max(1, width);
-        var wrapped = TextLayout.Build(display, budget, WrapMode.WordWrap);
-        var span = display.AsSpan();
-
-        var fragments = new List<CellFragment>(wrapped.LineCount);
-        for (var v = 0; v < wrapped.LineCount; v++)
-        {
-            int start = wrapped.LineContentStart(v);
-            int end = wrapped.LineContentEnd(v);
-
-            int renderEnd = end;
-            while (renderEnd > start && (span[renderEnd - 1] == ' ' || span[renderEnd - 1] == '\t'))
-                renderEnd--;
-
-            if (renderEnd == start && fragments.Count > 0)
-            {
-                // A whitespace-only segment (the lone space between two exactly-fitting words): don't emit a
-                // blank visual row — absorb it into the previous fragment's source span, keeping tiling intact.
-                var prev = fragments[^1];
-                fragments[^1] = prev with { SrcLength = format.SourceOf(end) - prev.SrcStart };
-                continue;
-            }
-
-            var runs = StyledRunsOf(format, start, renderEnd);
-            int renderWidth = CellsBetween(display, start, renderEnd);
-            int fragSrcStart = format.SourceOf(start);
-            fragments.Add(new CellFragment(fragSrcStart, format.SourceOf(end) - fragSrcStart, renderWidth) { StyledRuns = runs });
-        }
-
-        return fragments.Count > 0 ? [.. fragments] : [new CellFragment(format.ContentStart, 0, 0)];
-    }
-
-    /// <summary>
-    /// Clips a cell's <b>formatted</b> (marks-hidden) display to <paramref name="width"/> cells for
-    /// <see cref="TableOverflow.Truncate"/> (§5.6) — the marks-hidden analogue of <see cref="TruncateCell"/>:
-    /// a fitting cell renders whole; an over-wide one keeps the widest whole-cluster display prefix fitting
-    /// <c>width − 1</c> and sets <see cref="CellFragment.Ellipsis"/>. The fragment carries its styled runs.
-    /// </summary>
-    private CellFragment TruncateCellFormatted(CellFormat format, int width)
-    {
-        string display = format.Display;
-        if (display.Length == 0)
-            return new CellFragment(format.ContentStart, 0, 0);
-
-        if (format.DisplayWidth <= width)
-            return new CellFragment(format.SourceOf(0), format.SourceOf(display.Length) - format.SourceOf(0), format.DisplayWidth) { StyledRuns = StyledRunsOf(format, 0, display.Length) };
-
-        int budget = Math.Max(0, width - EllipsisWidth);
-        int used = 0, len = 0;
-        var clusters = display.AsSpan().GetGraphemeEnumerator();
-        while (clusters.MoveNext())
-        {
-            int w = GraphemeWidth.StringWidth(clusters.Current);
-            if (used + w > budget)
-                break;
-            used += w;
-            len += clusters.Current.Length;
-        }
-
-        return new CellFragment(format.SourceOf(0), format.SourceOf(len) - format.SourceOf(0), used) { StyledRuns = StyledRunsOf(format, 0, len), Ellipsis = true };
+        int start2 = SourceAt(0);
+        return new CellFragment(start2, SourceAt(len) - start2, used) { StyledRuns = RunsUpTo(len), Ellipsis = true };
     }
 
     /// <summary>

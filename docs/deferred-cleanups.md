@@ -195,9 +195,23 @@ built by the later table WPs — a half-fix now would be throwaway:
 ## Viewport-layout review deferral (2026-07-05, after e8826d6)
 - **Double word-wrap on cold-start table realize** (review finding 4). When a table realizes before the first OnViewportChanged (_wrapWidth==0), TablePresenter's ctor builds every row's wrapped layout at the fallback width, then the first MeasureOverride's ApplyViewportWidths re-derives them at the real width — each cell wrapped twice on the initial pass. Perf only (one-time per table, not per-keystroke). Fix would defer the ctor's row build until the first measure; deferred to avoid ctor-restructuring risk. Revisit if table realize cost shows up.
 
-## Cell-inline review deferrals (2026-07-06, after the inline-formatting fixes)
-The 3 CONFIRMED correctness findings were fixed (empty-display fallback, End-key content-end, Style in the render signature — mutation-checked). Deferred, non-blocking:
-- **#4 Truncate non-active cell click-box (PLAUSIBLE).** A formatted+truncated over-wide cell's caret stop covers only its visible prefix, not a column-clamped click-box — a click in the blank area right of the … *may* fall through to a neighbor cell. Edge case (Truncate mode only); verify + clamp the click-box to the column if it reproduces.
-- **#5 WrapCellFormatted/TruncateCellFormatted duplicate WrapCell/TruncateCell.** Near-verbatim copies differing only in raw vs display+styled-runs; unify to one parametrized helper so the raw and formatted caret-mappings can't drift. Refactor risk (touches the caret map) — do with a fresh caret-map test pass.
-- **#6 `_cellRuns` retained for the model's lifetime, consumed only by the test-only `CellInlineRuns` accessor** (production reads `_formats`). Make the accessor compute on demand, or drop it.
-- **#7 `CellFormat._contentLength` assigned but never read; #8 `TableModel.Format(int,int)` accessor has no callers.** Remove both (trivial dead surface).
+## Cell-inline review deferrals (2026-07-06, after the inline-formatting fixes) — ✅ RESOLVED (2026-07-07)
+The 3 CONFIRMED correctness findings were fixed (empty-display fallback, End-key content-end, Style in the render signature — mutation-checked). The 5 deferred items below are now cleared:
+- ~~**#4 Truncate non-active cell click-box (PLAUSIBLE).**~~ **Verified a no-op — kept as-is.** The … reserves one
+  cell, so a truncated cell's drawn width is always ≥ columnWidth − 1: at most ONE padding cell inside the column
+  box is uncovered, and it sits distance 1 from this cell's prefix vs. distance ≥ 2 from the neighbour, so
+  `NearestCell`'s nearest-column snap already keeps a click there in the truncated cell (a column clamp would land
+  identically). Documented in `TableCaretMap.Build`'s Truncate branch + pinned (mutation-checked) by
+  `TableOverflowTests.Truncate_ClickInThePaddingRightOfTheEllipsis_LandsInTheTruncatedCell_NotTheNeighbour`.
+- ~~**#5 WrapCellFormatted/TruncateCellFormatted duplicate WrapCell/TruncateCell.**~~ **Unified.** The raw and
+  formatted paths now delegate to one shared core each — `TableModel.WrapContent` / `TruncateContent` (a
+  `CellFormat?` selects raw 1:1-source vs. formatted `SourceOf`+styled-runs) — so the two caret-mappings can't
+  drift. Behaviour preserved exactly (the render-width computation is branched per mode, since a trimmed trailing
+  TAB measures 0 under GraphemeWidth but 1 under the raw subtraction). Pinned by the existing wrap/truncate suite +
+  `TableInlineFormatTests.Wrap_OverFormattedCell_WordExactlyFillingColumn_AbsorbsTheLoneSpace_NoBlankRow`.
+- ~~**#6 `_cellRuns` retained for the model's lifetime.**~~ **Dropped.** The projected runs are consumed at Build
+  (to build each `CellFormat`) then thrown away; `CellInlineRuns` now re-derives on demand from the retained
+  Markdig table (`CellNodeAt`) — no per-cell run array carried for the document's lifetime. The `CellInlineRuns`
+  tests still pass.
+- ~~**#7 `CellFormat._contentLength` assigned but never read; #8 `TableModel.Format(int,int)` accessor has no
+  callers.**~~ **Both removed** (dead surface — field + ctor param + accessor).

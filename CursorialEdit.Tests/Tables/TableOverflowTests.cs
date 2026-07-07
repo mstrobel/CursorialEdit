@@ -212,6 +212,29 @@ public class TableOverflowTests
         Assert.Equal(1, cell!.Value.Column);
     }
 
+    [Fact]
+    public void Truncate_ClickInThePaddingRightOfTheEllipsis_LandsInTheTruncatedCell_NotTheNeighbour() // deferred #4
+    {
+        // A FORMATTED, over-wide, NON-active truncated cell maps only its drawn prefix (deferred #4). A wide (2-cell)
+        // cluster leaves a one-cell padding gap inside the column box, to the RIGHT of the …: `**中中中**` renders
+        // `中中中` (6 cells); at column width 4 the prefix is one `中` (2) + the … (1) = 3 drawn, so column cell 4
+        // (relative x 3, past the divider+prefix+…) is uncovered padding. A click there must still resolve into THIS
+        // truncated cell (0,0), never fall through to the neighbour (0,1) — confirming no column-clamp is needed.
+        var (model, source) = BuildModel("| **中中中** | z |\n|---|---|\n| a | b |\n");
+        var metrics = TableGridMetrics.Build(model, new[] { 4, 3 }); // column 0 forced narrow → `中中中` truncates
+        var map = TableCaretMap.Build(model, metrics, source, TableOverflow.Truncate); // no active cell → all truncated
+
+        // Column 0's content region is [ContentX(0)=2, +4) = grid cells 2..5; the prefix `中` occupies 2..3, the …
+        // sits at 4, and cell 5 is the lone uncovered padding cell — the "blank area right of the …" the hunt targets.
+        int paddingCell = metrics.ContentX(0) + metrics.ColumnWidth(0) - 1; // = 5, the rightmost cell of column 0's box
+        Assert.Equal(5, paddingCell);
+
+        int offset = map.OffsetAt(row: 1, cell: paddingCell); // grid row 1 = the header content row
+        var landed = model.CellOfOffset(offset);
+        Assert.NotNull(landed);
+        Assert.Equal((0, 0), (landed!.Value.Row, landed.Value.Column)); // the truncated cell, not the neighbour (0,1)
+    }
+
     private static int FindColumnContentX(MarkdownEditingHarness h, char glyph, int frameRow)
     {
         string row = h.RowTrimmed(frameRow);

@@ -30,15 +30,13 @@ internal sealed class CellFormat
 {
     private readonly CellInlineStyle[] _styleAt;   // per display char (Display.Length)
     private readonly int[] _displayToSrc;          // display index → block-relative source ([Display.Length + 1])
-    private readonly int _contentLength;
 
-    private CellFormat(string display, bool isPlain, int displayWidth, int contentStart, int contentLength, CellInlineStyle[] styleAt, int[] displayToSrc)
+    private CellFormat(string display, bool isPlain, int displayWidth, int contentStart, CellInlineStyle[] styleAt, int[] displayToSrc)
     {
         Display = display;
         IsPlain = isPlain;
         DisplayWidth = displayWidth;
         ContentStart = contentStart;
-        _contentLength = contentLength;
         _styleAt = styleAt;
         _displayToSrc = displayToSrc;
     }
@@ -159,7 +157,7 @@ internal sealed class CellFormat
             return Plain(content, contentStart);
 
         int width = GraphemeWidth.StringWidth(display);
-        return new CellFormat(display, isPlain: false, width, contentStart, n, [.. styleAt], [.. displayToSrc]);
+        return new CellFormat(display, isPlain: false, width, contentStart, [.. styleAt], [.. displayToSrc]);
     }
 
     private static CellFormat Plain(string content, int contentStart)
@@ -171,7 +169,7 @@ internal sealed class CellFormat
         var displayToSrc = new int[n + 1];
         for (var i = 0; i <= n; i++)
             displayToSrc[i] = contentStart + i;
-        return new CellFormat(content, isPlain: true, width, contentStart, n, styleAt, displayToSrc);
+        return new CellFormat(content, isPlain: true, width, contentStart, styleAt, displayToSrc);
     }
 
     /// <summary>The inline formatting a run kind contributes to the content it encloses (mirrors the prose <c>RunMapBuilder.StyleOf</c>).</summary>

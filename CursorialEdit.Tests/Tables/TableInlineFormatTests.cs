@@ -266,6 +266,30 @@ public sealed class TableInlineFormatTests
     }
 
     [Fact]
+    public void Wrap_OverFormattedCell_WordExactlyFillingColumn_AbsorbsTheLoneSpace_NoBlankRow()
+    {
+        // Pins the shared wrap core's whitespace-only-segment absorption on the FORMATTED path (deferred #5 dedup):
+        // `**abcd efgh**` renders `abcd efgh`; at width 4 `abcd` fills the column exactly, so prose WordWrap parks
+        // the following space as its own segment. The unified helper must absorb it into the previous fragment —
+        // two visual rows (`abcd`, `efgh`), never a lone-space blank row between — with both fragments styled bold.
+        var (_, model) = Build("| **abcd efgh** | y |\n|---|---|\n| a | b |");
+        var layout = model.LayoutRow(0, new[] { 4, 3 }, TableOverflow.Wrap);
+
+        Assert.Equal(2, layout.VisualRowCount); // exactly two rows — the lone inter-word space did not spill a row
+        int contentStart = model.CellContentRange(0, 0).Start;
+        string content = model.CellContent(0, 0); // "**abcd efgh**"
+        foreach (var visual in layout.VisualRows)
+        {
+            var frag = visual.Cell(0);
+            Assert.NotNull(frag.StyledRuns);
+            Assert.True(frag.Width <= 4, "each wrapped formatted fragment fits its column");
+            Assert.All(frag.StyledRuns!, run => Assert.True(run.Style.HasFlag(CellInlineStyle.Bold), "the wrapped content stays bold"));
+            // The fragment's source span tiles the raw cell content (the absorbed space stays attributed to source).
+            Assert.DoesNotContain("*", content.Substring(frag.StyledRuns![0].SrcStart - contentStart, frag.StyledRuns[0].SrcLength));
+        }
+    }
+
+    [Fact]
     public void Truncate_OverFormattedCell_TruncatesTheDisplay_WithEllipsis()
     {
         // `**hello world**` → `hello world` (11); truncated to a 6-cell column it keeps a 5-cell display prefix
