@@ -24,6 +24,14 @@ internal static class CapabilityPresets
     public const string Ansi16LegacyClipboard = nameof(Ansi16LegacyClipboard);
 
     /// <summary>
+    /// The Kitty wire with OSC 52 <b>read</b> (and write) negotiated — the FB-3 read-side path where Ctrl+V
+    /// pulls the SYSTEM clipboard via the query/response round-trip. The stock presets leave read off (no
+    /// family negotiated it until the read leg landed), so a suite exercising <c>EditorControl.Paste</c>'s
+    /// system-clipboard branch composes it here.
+    /// </summary>
+    public const string KittyTruecolorClipboardRead = nameof(KittyTruecolorClipboardRead);
+
+    /// <summary>
     /// The NoColor tier composed onto the Kitty wire (§5.1's <c>with (ColorDepth)</c>): full input and
     /// styling, but color collapsed to <c>Default</c> (<see cref="ColorCapabilities.None"/>, whose
     /// <c>Depth</c> is <see cref="ColorDepth.NoColor"/>). Render-affecting suites add it to assert the
@@ -45,6 +53,7 @@ internal static class CapabilityPresets
         nameof(TestCapabilities.Ansi16Legacy) => TestCapabilities.Ansi16Legacy,
         KittyTruecolorClipboard => WithClipboardWrite(TestCapabilities.KittyTruecolor),
         Ansi16LegacyClipboard => WithClipboardWrite(TestCapabilities.Ansi16Legacy),
+        KittyTruecolorClipboardRead => WithClipboardRead(TestCapabilities.KittyTruecolor),
         NoColor => WithNoColor(TestCapabilities.KittyTruecolor),
         _ => throw new ArgumentOutOfRangeException(nameof(preset)),
     };
@@ -61,6 +70,15 @@ internal static class CapabilityPresets
             Output = capabilities.Output with
             {
                 Protocol = capabilities.Output.Protocol with { ClipboardWrite = true },
+            },
+        };
+
+    private static TerminalCapabilities WithClipboardRead(TerminalCapabilities capabilities) =>
+        capabilities with
+        {
+            Output = capabilities.Output with
+            {
+                Protocol = capabilities.Output.Protocol with { ClipboardRead = true, ClipboardWrite = true },
             },
         };
 }

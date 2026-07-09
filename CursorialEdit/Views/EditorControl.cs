@@ -44,10 +44,13 @@ namespace CursorialEdit.Views;
 /// (interior terminators byte-exact) to <b>both</b> sinks: the terminal clipboard via
 /// <see cref="IClipboardService"/> (an OSC 52 write — fire-and-forget, gated internally on the
 /// negotiated <c>ClipboardWrite</c>) and the app-internal <see cref="Clipboard"/> store. Ctrl+V
-/// pastes from that store — the FB-3 fallback: terminal clipboard reads don't exist at 0.3.1, so
-/// Ctrl+V <b>cannot see content copied outside the app</b>; external content arrives as the
-/// terminal's own paste keybinding → bracketed paste → <see cref="TextInputEventArgs.FromPaste"/>,
-/// which <see cref="OnTextInput"/> applies as one literal splice. TextBox-parity aliases:
+/// prefers the <b>system</b> clipboard when the terminal negotiated OSC 52 <b>read</b>
+/// (<see cref="IClipboardService.CanRead"/>) — an async query/response round-trip that finally lets
+/// Ctrl+V see content copied <b>outside</b> the app — and falls back to the internal store when read is
+/// unsupported/denied/times out (the FB-3 read-side closure; see <see cref="Paste"/>). External content
+/// also still arrives as the terminal's own paste keybinding → bracketed paste →
+/// <see cref="TextInputEventArgs.FromPaste"/>, which <see cref="OnTextInput"/> applies as one literal
+/// splice. TextBox-parity aliases:
 /// Ctrl+Insert copy, Shift+Insert paste, Shift+Delete cut. Only safe-everywhere chords are bound
 /// (Ctrl+letter normalizes to <c>(Character, letter, Control)</c> on every wire — integration
 /// notes §4); plain-paste/alternate chords are M4/M5 work.
@@ -96,6 +99,16 @@ public class EditorControl : Control, IContentRowMap
     private IBlockHeightSource? _heightSource;
     private Func<int, UIElement>? _blockFactory;
     private InternalClipboard _clipboard = InternalClipboard.Shared;
+
+    // At most one OSC 52 read is in flight (Ctrl+V system-clipboard read): OSC 52 carries no request id, so a
+    // device response completes EVERY pending read with the same text — a held/double-tapped Ctrl+V during the
+    // terminal's per-read permission prompt would otherwise fan one clipboard value into duplicate pastes.
+    private bool _pasteReadInFlight;
+
+    // The OSC 52 read round-trip budget — generous because terminals often interpose a per-read permission
+    // prompt (Kitty asks each time); a denied/unsupported/slow read completes null and we fall back to the store.
+    private static readonly TimeSpan PasteReadTimeout = TimeSpan.FromSeconds(2);
+
     private bool _hasFocus;
     private int _caretColumn;
     private int _caretDocumentRow;
@@ -515,7 +528,7 @@ public class EditorControl : Control, IContentRowMap
 
             case Key.Character when ctrl && !shift && IsLetter(e, 'v'):
                 if (!Paste())
-                    return; // the store is empty — bubbles (FB-3: there is no terminal read to fall back to)
+                    return; // no document, or (no-read terminal) the store is empty — bubbles; an OSC 52 read consumes the chord
                 break;
 
             // The Ctrl+Shift+Z redo arm precedes the Ctrl+Z undo arm so a shifted Z matches redo
@@ -634,18 +647,78 @@ public class EditorControl : Control, IContentRowMap
     }
 
     /// <summary>
-    /// Ctrl+V / Shift+Insert / the ribbon's Paste command: pastes the internal store's content as one
-    /// literal splice (replacing the selection). The single path all three share (M5). False (the key
-    /// bubbles) when no document is attached or the store is empty — this path can only see in-app
-    /// copies (FB-3); external clipboard content arrives via bracketed paste.
+    /// Ctrl+V / Shift+Insert / the ribbon's Paste command (the single path all three share, M5). When the
+    /// terminal negotiated OSC 52 <b>read</b> (<see cref="IClipboardService.CanRead"/>), this pulls the
+    /// <b>system</b> clipboard — external copies included — via <see cref="IClipboardService.TryGetTextAsync"/>,
+    /// a query/response round-trip the framework pumps on this thread. Because that is async (a blocking wait
+    /// would deadlock the pump), the chord is consumed immediately and the paste lands on completion; the
+    /// app-internal <see cref="Clipboard"/> store is the fallback when the read is unsupported, denied, times
+    /// out, or returns empty (system-preferred, per the FB-3 read-side closure). Without read capability the
+    /// internal store is the only source and external content still arrives via the terminal's own bracketed
+    /// paste. Returns <see langword="false"/> (the key bubbles) only when no document is attached, or — in the
+    /// no-read case — the store is empty.
     /// </summary>
     public bool Paste()
     {
-        if (_caret is not { } caret || _clipboard.Text is not { Length: > 0 } text)
+        if (_caret is not { } caret)
+            return false; // no document — bubble
+
+        if (UIApplication.Current is { } application && application.Clipboard.CanRead)
+        {
+            // A device response completes EVERY pending read with the same text (OSC 52 carries no request
+            // id), so coalesce a repeat chord onto the in-flight read rather than fanning it into duplicate
+            // pastes during the terminal's permission-prompt window (TextBox's _pasteReadInFlight guard).
+            if (!_pasteReadInFlight)
+            {
+                _pasteReadInFlight = true;
+                _ = CompletePasteAsync(application.Clipboard.TryGetTextAsync(PasteReadTimeout));
+            }
+
+            return true; // chord consumed; the paste (system text, or the store fallback) lands on completion
+        }
+
+        return PasteFromStore(caret); // no OSC 52 read — the internal store is the only source (FB-3 write pairing)
+    }
+
+    /// <summary>Pastes the app-internal store's content as one literal splice; false (the key bubbles) when it is empty.</summary>
+    private bool PasteFromStore(DocumentCaret caret)
+    {
+        if (_clipboard.Text is not { Length: > 0 } text)
             return false;
 
         caret.Paste(text);
         return true;
+    }
+
+    /// <summary>
+    /// The OSC 52 read completion (fire-and-forget from <see cref="Paste"/>): the reply — or the timeout null —
+    /// resumes on the UI thread via the dispatcher sync context. System clipboard preferred, the in-app store
+    /// as fallback when the read yields nothing (denied, unsupported-but-<c>CanRead</c> race, timeout, or an
+    /// empty selection). The caret is re-resolved at completion — a document reload during the read window
+    /// swaps it — so a stale caret is never pasted into.
+    /// </summary>
+    private async Task CompletePasteAsync(ValueTask<string?> read)
+    {
+        try
+        {
+            string? text = await read;
+            if (string.IsNullOrEmpty(text))
+                text = _clipboard.Text; // system clipboard yielded nothing — fall back to the in-app store
+
+            if (!string.IsNullOrEmpty(text) && _caret is { } caret)
+                caret.Paste(text);
+        }
+        catch (Exception)
+        {
+            // Fire-and-forget: degrade a failed paste to a no-op rather than an unobserved-task exception.
+            // TryGetTextAsync completes with null (never faults) and caret.Paste is throw-free for literal
+            // text, so this is defensive; the framework's exception funnel (RaiseUnhandled) is internal and
+            // not reachable from the app assembly.
+        }
+        finally
+        {
+            _pasteReadInFlight = false;
+        }
     }
 
     /// <summary>
