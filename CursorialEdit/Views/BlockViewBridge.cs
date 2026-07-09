@@ -219,6 +219,11 @@ public sealed class BlockViewBridge : IEditorViewSource, IBlockRunMapSource, ISe
     /// selection source, which returns <see langword="null"/> for a non-table block regardless.</remarks>
     public CellRect? GetCellRect(BlockId block) => SelectionSource?.GetCellRect(block);
 
+    /// <inheritdoc/>
+    /// <remarks>A pass-through to the installed caret, which owns the overlay-tracking set (this bridge holds no
+    /// selection state of its own — same forwarding shape as <see cref="GetSelection"/>).</remarks>
+    public void OnPresenterRealized(BlockId block) => SelectionSource?.OnPresenterRealized(block);
+
     // ───────────────────────────── presenter factory + registry ─────────────────────────────
 
     /// <summary>
@@ -235,6 +240,11 @@ public sealed class BlockViewBridge : IEditorViewSource, IBlockRunMapSource, ISe
         };
 
         _presenters[id] = presenter;
+
+        // Seed the caret's overlay-tracking for a block that realizes under an active selection, so a later
+        // clear re-rasters it instead of stranding the fill (see DocumentCaret.OnPresenterRealized).
+        SelectionSource?.OnPresenterRealized(id);
+
         return presenter;
     }
 

@@ -1163,6 +1163,22 @@ internal sealed class DocumentCaret : ISelectionSource
         return Blocks.IndexOf(block) == r.BlockIndex ? r.Rect : null;
     }
 
+    /// <inheritdoc/>
+    public void OnPresenterRealized(BlockId block)
+    {
+        // A block that realizes under an active selection already draws the highlight from the live
+        // GetSelection above — but AfterStateChange seeded _selectionPainted only for the blocks realized at
+        // the last selection change, so this one carries no tracked overlay. Without the seed, the next state
+        // change that clears/shrinks the selection computes now == (0,0) with was == null and the
+        // `else if (was is not null)` guard SKIPS the invalidate, stranding the fill until an unrelated
+        // re-raster (Select All → click → ghosts until scrolled away). Record it now — no re-raster; the fresh
+        // presenter already paints it. GetSelection returns the exact block-relative range _selectionPainted
+        // stores, so a later diff compares like against like. The whole-document analog of
+        // TablePresenter.RetrackHighlightedRows, which does the same one level down for table rows.
+        if (GetSelection(block) is { } overlay)
+            _selectionPainted[block] = overlay;
+    }
+
     /// <summary>
     /// The active <b>cell-rect</b> (M3.WP8, spec §5.4) when a selection's anchor and active caret fall in
     /// <b>different cells of the same table block</b> — the block index, its live overlay, its absolute start

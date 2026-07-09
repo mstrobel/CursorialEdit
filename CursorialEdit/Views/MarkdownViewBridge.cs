@@ -285,6 +285,11 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         _presenters[id] = presenter;
         PresenterCreateCount++;
 
+        // A block realizing under an active selection paints the highlight from its live SelectionProvider, but
+        // the caret's overlay-tracking has no entry for a block realized since the last selection change — so a
+        // later clear would strand the fill. Record it now so the clear re-rasters it (see OnPresenterRealized).
+        SelectionSource?.OnPresenterRealized(id);
+
         // Reveal the caret line the instant its block scrolls into view (the presenter did not exist when
         // the caret last moved) — otherwise the active block would render formatted until the next move.
         if (_activeBlockId == id)

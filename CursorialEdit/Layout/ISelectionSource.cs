@@ -28,4 +28,15 @@ public interface ISelectionSource
     /// per-cell text highlight.
     /// </summary>
     CellRect? GetCellRect(BlockId block);
+
+    /// <summary>
+    /// Notifies the source that a presenter for <paramref name="block"/> has just realized (scrolled into
+    /// view). A block that realizes while a selection is active paints the highlight immediately from its
+    /// live <see cref="GetSelection"/>, but the source seeds its overlay-tracking only at a selection change
+    /// and holds no entry for a block realized <i>since</i> — so a later clear would skip re-rastering it,
+    /// stranding the fill until an unrelated re-raster (the "Select All, then click leaves ghosts until you
+    /// scroll them away" symptom). Recording the overlay here keeps the clear path honest; it is a no-op when
+    /// the selection is empty or does not touch the block.
+    /// </summary>
+    void OnPresenterRealized(BlockId block);
 }
