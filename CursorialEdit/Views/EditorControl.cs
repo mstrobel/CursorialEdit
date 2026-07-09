@@ -708,12 +708,12 @@ public class EditorControl : Control, IContentRowMap
             if (!string.IsNullOrEmpty(text) && _caret is { } caret)
                 caret.Paste(text);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Fire-and-forget: degrade a failed paste to a no-op rather than an unobserved-task exception.
-            // TryGetTextAsync completes with null (never faults) and caret.Paste is throw-free for literal
-            // text, so this is defensive; the framework's exception funnel (RaiseUnhandled) is internal and
-            // not reachable from the app assembly.
+            // Fire-and-forget: route a fault through the app's unhandled-exception funnel rather than letting it
+            // become an unobserved-task exception. Defensive — TryGetTextAsync completes null (never faults) and
+            // caret.Paste is throw-free for literal text — but a future throwing paste path funnels correctly.
+            UIApplication.Current?.ReportUnhandledException(ex);
         }
         finally
         {
