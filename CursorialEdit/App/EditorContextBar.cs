@@ -1,6 +1,7 @@
 using Cursorial.UI;
 using Cursorial.UI.Bars;
 using Cursorial.UI.Controls;
+using Cursorial.UI.Themes;
 
 using CursorialEdit.Views;
 
@@ -57,9 +58,10 @@ public sealed class EditorContextBar
     /// <summary>The strip itself — attach it with <see cref="MiniToolbar.SetBar"/> on the right-click target.</summary>
     public MiniToolbar Bar { get; }
 
-    // An icon-only bar button: the tiered Icon on the Icon tier, an explicit empty Content so the BarCommand auto-fill
-    // never grafts the command Text in as a label, and a BarCommand carrying the display label + running `op`.
-    private BarButton IconButton(Icon icon, string text, Action op)
+    // An icon-only bar button: the tiered IconCarrier on the Icon tier (the theme templates it into an Icon per host),
+    // an explicit empty Content so the BarCommand auto-fill never grafts the command Text in as a label, and a
+    // BarCommand carrying the display label + running `op`.
+    private BarButton IconButton(IconCarrier icon, string text, Action op)
     {
         // Bool-returning Cut/Copy/Paste are wrapped by the caller as `() => _editor.Xxx()` (the result is discarded —
         // the strip runs the op unconditionally, like the ribbon does, unlike the keybind which bubbles on no-op).

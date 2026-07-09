@@ -4,6 +4,7 @@ using Cursorial.Text;
 using Cursorial.UI.Bars;
 using Cursorial.UI.Controls;
 using Cursorial.UI.Testing;
+using Cursorial.UI.Themes;
 
 using CursorialEdit.App;
 using CursorialEdit.Document.Buffer;
@@ -60,7 +61,7 @@ public sealed class ContextBarTests
         // Icon-only: every button carries a tiered Icon on the Icon tier and an explicit EMPTY Content (no label).
         foreach (var button in bar.Items.OfType<BarButton>())
         {
-            Assert.IsType<Icon>(button.Icon);
+            Assert.IsType<IconCarrier>(button.Icon);
             Assert.Equal(string.Empty, button.Content);
         }
     }
@@ -76,7 +77,7 @@ public sealed class ContextBarTests
         foreach (var button in shell.ContextBar.Items.OfType<BarButton>())
         {
             buttons++;
-            var icon = Assert.IsType<Icon>(button.Icon);
+            var icon = Assert.IsType<IconCarrier>(button.Icon);
             TestSupport.IconAssert.NerdFontOverWidthOneFloor(icon);
         }
 

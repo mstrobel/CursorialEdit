@@ -2,6 +2,7 @@ using System.Linq;
 
 using Cursorial.Text;
 using Cursorial.UI.Controls;
+using Cursorial.UI.Themes;
 
 using Xunit;
 
@@ -27,9 +28,9 @@ internal static class IconAssert
         => codepoint is >= 0xE000 and <= 0xF8FF        // BMP Private Use Area
         || codepoint is >= 0xF0000 and <= 0xFFFFD;     // Supplementary Private Use Area-A
 
-    /// <summary>Asserts <paramref name="icon"/> is a tiered Nerd Font icon: one PUA <see cref="Icon.Glyph"/> codepoint
-    /// (<see cref="Icon.GlyphWidth"/> 1) over a width-1, no-VS16 <see cref="Icon.Text"/> floor.</summary>
-    public static void NerdFontOverWidthOneFloor(Icon icon)
+    /// <summary>Asserts <paramref name="icon"/> is a tiered Nerd Font icon carrier: one PUA <see cref="Icon.Glyph"/>
+    /// codepoint (<see cref="Icon.GlyphWidth"/> 1) over a width-1, no-VS16 <see cref="Icon.Text"/> floor.</summary>
+    public static void NerdFontOverWidthOneFloor(IconCarrier icon)
     {
         // Glyph tier: exactly one Nerd-Font-PUA codepoint, budgeted at one cell.
         Assert.False(string.IsNullOrEmpty(icon.Glyph), "the Nerd Font Glyph tier must be set");

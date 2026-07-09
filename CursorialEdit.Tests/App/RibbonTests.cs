@@ -8,6 +8,7 @@ using Cursorial.UI.Bars;
 using Cursorial.UI.Bars.Input;
 using Cursorial.UI.Controls;
 using Cursorial.UI.Testing;
+using Cursorial.UI.Themes;
 
 using CursorialEdit.App;
 using CursorialEdit.Document.Model;
@@ -195,7 +196,7 @@ public sealed class RibbonTests
         {
             buttons++;
             object? icon = button.GetValue(BarButton.IconProperty);
-            var tiered = Assert.IsType<Icon>(icon); // the icon tier is a Cursorial Icon; the image tier stays null
+            var tiered = Assert.IsType<IconCarrier>(icon); // the icon tier is a shareable IconCarrier the theme templates into an Icon; the image tier stays null
             TestSupport.IconAssert.NerdFontOverWidthOneFloor(tiered);
         }
 
