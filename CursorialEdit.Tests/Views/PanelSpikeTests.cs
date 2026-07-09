@@ -254,17 +254,20 @@ public sealed class PanelSpikeTests
         harness.Source.Reshape(80); // 80 rows; max offset = 68
         harness.SettleAndAssert();
         Assert.Equal(80, harness.ScrollViewer.Extent.Rows);
-        Assert.Equal(80 - harness.ScrollViewer.Viewport.Rows, harness.ScrollViewer.VerticalOffset);
+        int clamped = 80 - harness.ScrollViewer.Viewport.Rows; // 68 — the offset coerced into the shrunk range
+        Assert.Equal(clamped, harness.ScrollViewer.VerticalOffset);
 
-        // Grow again mid-scroll: the extent re-publishes and the viewport must stay fully painted.
-        // PINNED FRAMEWORK SEMANTICS (spike finding, FB-16 evidence): offset coercion is a view
-        // over the stored RAW offset, so regrowing the extent RESURRECTS the pre-shrink offset
-        // (150), not the clamped 68 — and the value store's equal-coerced-value gate makes an
-        // app-side pin impossible while the extent is shrunk. Realization must survive the jump.
+        // Grow again mid-scroll: the extent re-publishes and the offset stays where the shrink CLAMPED it.
+        // FRAMEWORK SEMANTICS (Cursorial ValueStore fa956d6 — the PD20 amendment, precedence-matrix row M231a):
+        // a gated (comparer-equal) coerced write is last-writer-wins for the RAW slot, so the shrink's clamp to
+        // 68 becomes the stored offset; regrowing re-coerces against 68 and the offset clamps-and-STAYS — it does
+        // NOT resurrect the pre-shrink 150. (Pre-fix the gate returned before recording the raw, so the stale 150
+        // resurrected AND an app-side pin was impossible while shrunk — both are fixed now, so an app that WANTS
+        // to restore a pre-shrink offset must now do so explicitly.) Realization must survive the regrow.
         harness.Source.Reshape(500);
         harness.SettleAndAssert();
         Assert.Equal(500, harness.ScrollViewer.Extent.Rows);
-        Assert.Equal(150, harness.ScrollViewer.VerticalOffset);
+        Assert.Equal(clamped, harness.ScrollViewer.VerticalOffset); // stays at the shrink's clamp (68), not a resurrected 150
 
         // And the newly reachable tail is realizable.
         harness.Host.SendKey(Key.End, KeyModifiers.Control);
