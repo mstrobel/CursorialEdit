@@ -290,6 +290,11 @@ public sealed class MarkdownViewBridge : IEditorViewSource
         // later clear would strand the fill. Record it now so the clear re-rasters it (see OnPresenterRealized).
         SelectionSource?.OnPresenterRealized(id);
 
+        // The caret seed above lets a later clear REACH this block, but a table keeps its OWN per-row highlight
+        // tracking that the ctor built empty (SelectionProvider was null then) — seed it now from the live
+        // provider so the forwarded clear re-rasters the right rows (base presenters no-op; see SeedSelectionOverlay).
+        presenter.SeedSelectionOverlay();
+
         // Reveal the caret line the instant its block scrolls into view (the presenter did not exist when
         // the caret last moved) — otherwise the active block would render formatted until the next move.
         if (_activeBlockId == id)

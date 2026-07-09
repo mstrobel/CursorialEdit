@@ -548,6 +548,15 @@ public sealed class TablePresenter : LeafBlockPresenter
     /// block-relative range is unchanged (the <c>DocumentCaret</c> was==now gate skips <see cref="InvalidateSelectionOverlay"/>
     /// in that case, so a rebuild that cleared the set would otherwise leave a stale highlight uncleared).
     /// </summary>
+    /// <summary>
+    /// Realize-time seed (the bridge calls this once the <see cref="LeafBlockPresenter.SelectionProvider"/> is
+    /// wired): a table scrolled into view under an active selection paints its rows' highlight from the live
+    /// provider, but its <see cref="_highlightedRows"/> tracking was built empty in the ctor (the provider was
+    /// null then). Repopulate it now so a later clear — which reaches this table via the caret's realize-time
+    /// <c>_selectionPainted</c> seed — actually re-rasters the highlighted rows instead of stranding them.
+    /// </summary>
+    internal override void SeedSelectionOverlay() => RetrackHighlightedRows();
+
     private void RetrackHighlightedRows()
     {
         var now = SelectionProvider?.Invoke();

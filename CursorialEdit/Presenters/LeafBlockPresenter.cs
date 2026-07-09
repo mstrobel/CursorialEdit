@@ -197,6 +197,17 @@ public abstract class LeafBlockPresenter : UIElement
     internal virtual void InvalidateSelectionOverlay() => InvalidateVisual();
 
     /// <summary>
+    /// Seeds this presenter's selection-overlay tracking from the live <see cref="SelectionProvider"/> when it
+    /// realizes under an active selection — <b>without</b> re-rastering (the fresh presenter already paints the
+    /// current highlight). The default is a no-op: an ordinary presenter keeps no overlay-tracking state (it
+    /// resolves the selection live at draw time, and the caret's <c>_selectionPainted</c> drives its clear). A
+    /// presenter with its OWN per-child tracking set (the <see cref="TablePresenter"/>'s <c>_highlightedRows</c>)
+    /// overrides this to seed it, so a later clear re-rasters the right children even though the block realized
+    /// after the selection was set — the per-child analog of the caret's realize-time seed.
+    /// </summary>
+    internal virtual void SeedSelectionOverlay() { }
+
+    /// <summary>
     /// The block's rendered height in terminal rows at <paramref name="width"/> cells — the height the
     /// WP7b bridge feeds the panel's prefix sums so slot heights match what this presenter draws (the
     /// inactive, reveal-invariant row count, folded for front matter). Public projection of

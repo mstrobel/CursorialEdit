@@ -138,4 +138,65 @@ public sealed class CaretReviewFixTests
             result.Add(h.RowTrimmed(r));
         return result;
     }
+
+    /// <summary>
+    /// The TABLE analog of <see cref="SelectAll_ThenClickToPlaceCaret_ClearsHighlightOnScrollRealizedBlocks"/>:
+    /// a table scrolled into view by Select All realizes under the active selection and paints its rows' highlight
+    /// from the live provider, but its own per-row tracking set (<c>_highlightedRows</c>) was built empty in the
+    /// ctor (the <c>SelectionProvider</c> was null then, before the bridge wired it). The caret's realize-time seed
+    /// lets the later clear REACH the table, but the table then found no tracked rows to re-raster — so the fill
+    /// stranded inside the table even after it cleared on ordinary blocks. Seeding <c>_highlightedRows</c> at
+    /// realize (<c>TablePresenter.SeedSelectionOverlay</c>, the per-row analog of the caret seed) closes it.
+    /// </summary>
+    [Fact]
+    public void SelectAll_ThenClick_ClearsHighlightInsideAScrollRealizedTable()
+    {
+        const int rows = 12;
+
+        // A tall preamble pushes the table + trailer below the fold, so Select All is what scrolls the table into
+        // view (realizing it under the selection). Distinctive cell text ("xx") so we can locate it on screen.
+        var preamble = string.Join("\n\n", Enumerable.Range(1, 20).Select(i => $"Para {i:D2}"));
+        var doc = preamble + "\n\n| ZZ | YY |\n|----|----|\n| xx | ww |\n\nTrailer";
+        using var h = MarkdownEditingHarness.Create(doc, columns: 40, rows: rows);
+
+        var topBefore = VisibleParagraphRows(h, rows);
+        Assert.True(topBefore.Count >= 2, "the top must show at least two paragraphs");
+        var plainBg = h.BackgroundAt(2, topBefore[1]); // a default (unselected, non-active) content-cell background
+
+        // Select All → the viewport follows the active end (the Trailer, the last line) to the bottom, realizing
+        // the table under the active selection.
+        h.Caret.SelectAll();
+        h.Settle();
+        Assert.True(h.Caret.HasSelection);
+
+        // The table's body cell is now visible and highlighted — whole-document Select All highlights the table via
+        // the SPAN path (its two ends are NOT both in this table, so it is not a cell-rect), covering the content.
+        var (cellRow, cellCol) = LocateText(h, "xx", rows);
+        Assert.True(cellRow >= 0, "the table's body cell must be visible after the Select-All scroll");
+        Assert.NotEqual(plainBg, h.BackgroundAt(cellCol, cellRow)); // highlighted (pre-condition)
+
+        // Click the Trailer paragraph — a DIFFERENT, still-visible block — to place a caret, clearing the selection.
+        var (trailerRow, trailerCol) = LocateText(h, "Trailer", rows);
+        Assert.True(trailerRow >= 0 && trailerRow != cellRow, "the Trailer must be visible and distinct from the table row");
+        h.Click(trailerCol, trailerRow);
+        Assert.False(h.Caret.HasSelection);
+
+        // The table's body cell must lose its highlight. Pre-fix: _highlightedRows was built empty at realize, so
+        // the clear re-rastered no rows and the fill stranded inside the table (cleared everywhere else).
+        Assert.Equal(plainBg, h.BackgroundAt(cellCol, cellRow));
+    }
+
+    /// <summary>The (row, col) of the first on-screen occurrence of <paramref name="text"/>, or (-1,-1). The column
+    /// is the string index — one frame cell per char (the located text is ASCII, no wide glyphs).</summary>
+    private static (int Row, int Col) LocateText(MarkdownEditingHarness h, string text, int rows)
+    {
+        for (int r = 0; r < rows; r++)
+        {
+            int col = h.Host.GetRowText(r).IndexOf(text, StringComparison.Ordinal);
+            if (col >= 0)
+                return (r, col);
+        }
+
+        return (-1, -1);
+    }
 }
