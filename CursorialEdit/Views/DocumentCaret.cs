@@ -837,14 +837,150 @@ internal sealed class DocumentCaret : ISelectionSource
 
     // ───────────────────────────── inline formatting (M4 slice) ─────────────────────────────
 
-    /// <summary>Bold: wraps the selection's source range in <c>**…**</c> (see <see cref="WrapSelection"/>).</summary>
-    public void Bold() => WrapSelection("**");
+    /// <summary>Bold toggle: unwraps the covering <c>**…**</c>/<c>__…__</c> when the caret is inside one (see <see cref="ToggleInline"/>), else wraps the selection in <c>**…**</c>.</summary>
+    public void Bold() => ToggleInline(InlineRunKind.Strong, "**");
 
-    /// <summary>Italic: wraps the selection's source range in <c>*…*</c> (see <see cref="WrapSelection"/>).</summary>
-    public void Italic() => WrapSelection("*");
+    /// <summary>Italic toggle: unwraps the covering <c>*…*</c>/<c>_…_</c> when the caret is inside one, else wraps the selection in <c>*…*</c>.</summary>
+    public void Italic() => ToggleInline(InlineRunKind.Emphasis, "*");
 
-    /// <summary>Inline code: wraps the selection's source range in <c>`…`</c> (see <see cref="WrapSelection"/>).</summary>
-    public void InlineCode() => WrapSelection("`");
+    /// <summary>Inline-code toggle: unwraps the covering <c>`…`</c> span when the caret is inside one, else wraps the selection in <c>`…`</c>.</summary>
+    public void InlineCode() => ToggleInline(InlineRunKind.Code, "`");
+
+    /// <summary>
+    /// Whether the caret sits strictly <b>inside</b> an inline construct of <paramref name="kind"/> — the
+    /// reflection the ribbon's format toggles show (checked = the caret's source position is covered by the
+    /// construct, delimiters included but not their outer boundaries: <c>|**b**</c> and <c>**b**|</c> are
+    /// inactive, <c>**b|old**</c> is active). Strictly source-honest, like the alignment radio-set: an empty
+    /// wrap pair (<c>**|**</c>) is NOT valid strong emphasis and reflects unchecked. Always false in a table
+    /// block — the raw-mark wrap/unwrap is guarded off tables (see <see cref="WrapSelection"/>), so the
+    /// reflection matches what the command can do.
+    /// </summary>
+    public bool IsInlineFormatActive(InlineRunKind kind) => FindActiveInlineRun(kind) is not null;
+
+    /// <summary>
+    /// Whether the inline format commands can act at the caret: a non-table block (the raw-mark splice would
+    /// corrupt pipe structure — cell-inline formatting is the table controller's job, deferred). The ribbon's
+    /// format buttons grey on this.
+    /// </summary>
+    public bool CanFormatInline =>
+        _buffer.LineCount > 0 && Blocks.Count > 0 && !BlockAtLineIsTable(_position.Line);
+
+    /// <summary>
+    /// The format-toggle core: unwrap the covering run when the caret is inside <paramref name="kind"/>,
+    /// else wrap the selection in <paramref name="mark"/> (the original M4 wrap primitive). The unwrap acts
+    /// on the run the caret sits in — with a selection, the ACTIVE end decides, mirroring the reflection.
+    /// </summary>
+    private void ToggleInline(InlineRunKind kind, string mark)
+    {
+        if (FindActiveInlineRun(kind) is { } active)
+            UnwrapInlineRun(active.BlockIndex, active.Run, kind);
+        else
+            WrapSelection(mark);
+    }
+
+    /// <summary>
+    /// The inline run of <paramref name="kind"/> covering the caret (strictly inside its span — see
+    /// <see cref="IsInlineFormatActive"/>), or <see langword="null"/>. Table blocks return null: their
+    /// cell-scoped runs live in the cell projection, and the unwrap path is guarded off tables anyway.
+    /// </summary>
+    private (int BlockIndex, InlineRun Run)? FindActiveInlineRun(InlineRunKind kind)
+    {
+        if (_buffer.LineCount == 0 || Blocks.Count == 0 || BlockAtLineIsTable(_position.Line))
+            return null;
+
+        int blockIndex = Blocks.IndexOfLine(_position.Line);
+        int rel = _buffer.GetOffset(_position) - BlockStartOffset(blockIndex);
+
+        foreach (var run in Blocks[blockIndex].InlineRuns)
+            if (run.Kind == kind && rel > run.SourceStart && rel < run.SourceStart + run.SourceLength)
+                return (blockIndex, run);
+
+        return null;
+    }
+
+    /// <summary>
+    /// Removes the delimiters of <paramref name="run"/> (one atomic <see cref="EditKind.Structural"/> splice —
+    /// the toggle-off inverse of <see cref="WrapSelection"/>). The caret lands where its character was: shifted
+    /// left by the opening trim when it sat past it (only on the run's first line — a prefix removal moves no
+    /// later line's columns), clamped to the content edges when it sat inside a delimiter. The selection
+    /// collapses (the unwrapped range's identity changed; re-selecting it is not obviously right).
+    /// </summary>
+    private void UnwrapInlineRun(int blockIndex, InlineRun run, InlineRunKind kind)
+    {
+        int startAbs = BlockStartOffset(blockIndex) + run.SourceStart;
+        var startPos = _buffer.GetPosition(startAbs);
+        var endPos = _buffer.GetPosition(startAbs + run.SourceLength);
+        string text = _buffer.GetText(startPos, endPos);
+
+        if (TrimDelimiters(text, kind) is not { } trimmed)
+            return; // projection drift / an unexpected shape — no-op rather than a corrupting splice
+
+        var (content, openTrim, closeTrim) = trimmed;
+
+        // Piecewise landing (the WrapSelection arithmetic, inverted): inside the opening delimiter → the content
+        // start; inside the closing delimiter → the content end; inside the content → shifted by the opening trim
+        // when (and only when) the caret shares the run's first line.
+        int caretAbs = _buffer.GetOffset(_position);
+        TextPosition landing;
+        if (caretAbs <= startAbs + openTrim)
+        {
+            landing = startPos;
+        }
+        else if (caretAbs >= startAbs + run.SourceLength - closeTrim)
+        {
+            var contentEndPre = _buffer.GetPosition(startAbs + run.SourceLength - closeTrim);
+            landing = contentEndPre.Line == startPos.Line
+                ? new TextPosition(contentEndPre.Line, contentEndPre.Col - openTrim)
+                : contentEndPre;
+        }
+        else
+        {
+            landing = _position.Line == startPos.Line
+                ? new TextPosition(_position.Line, _position.Col - openTrim)
+                : _position;
+        }
+
+        ApplyWrap(new Edit(startPos, text, content), position: landing, anchor: null);
+    }
+
+    /// <summary>
+    /// Splits a construct's full source <paramref name="text"/> into its content and the per-side delimiter trims,
+    /// or <see langword="null"/> when the shape does not match <paramref name="kind"/>: Strong takes 2 (<c>**</c> or
+    /// <c>__</c>, matching pairs), Emphasis 1 (<c>*</c>/<c>_</c>), Code its backtick fence plus the CommonMark
+    /// padding space when both sides carry one (and the content is not all spaces). Overlapping nesting falls out:
+    /// unwrapping Strong from <c>***x***</c> leaves <c>*x*</c>; Emphasis leaves <c>**x**</c>.
+    /// </summary>
+    private static (string Content, int OpenTrim, int CloseTrim)? TrimDelimiters(string text, InlineRunKind kind)
+    {
+        switch (kind)
+        {
+            case InlineRunKind.Strong:
+                if (text.Length >= 4 &&
+                    ((text.StartsWith("**", StringComparison.Ordinal) && text.EndsWith("**", StringComparison.Ordinal)) ||
+                     (text.StartsWith("__", StringComparison.Ordinal) && text.EndsWith("__", StringComparison.Ordinal))))
+                    return (text[2..^2], 2, 2);
+                return null;
+
+            case InlineRunKind.Emphasis:
+                if (text.Length >= 2 && text[0] is '*' or '_' && text[^1] == text[0])
+                    return (text[1..^1], 1, 1);
+                return null;
+
+            case InlineRunKind.Code:
+                int fence = 0;
+                while (fence < text.Length && text[fence] == '`')
+                    fence++;
+                if (fence == 0 || text.Length < 2 * fence || !text.EndsWith(new string('`', fence), StringComparison.Ordinal))
+                    return null;
+                string inner = text[fence..^fence];
+                if (inner.Length >= 2 && inner[0] == ' ' && inner[^1] == ' ' && inner.Trim().Length > 0)
+                    return (inner[1..^1], fence + 1, fence + 1); // the symmetric CommonMark padding space
+                return (inner, fence, fence);
+
+            default:
+                return null;
+        }
+    }
 
     /// <summary>
     /// Wraps the current selection's SOURCE range in <paramref name="mark"/> on both sides as ONE atomic

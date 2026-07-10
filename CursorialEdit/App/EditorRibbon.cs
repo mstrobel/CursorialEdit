@@ -174,6 +174,10 @@ public sealed class EditorRibbon : Ribbon
         Items.Add(BuildHomeTab());
         Items.Add(BuildTableTab());
         Items.Add(BuildViewTab());
+
+        // The shared format toggles read live caret state too — enlist them so the same re-query batch keeps
+        // every surface binding them (the Home Format group AND the right-click MiniToolbar) in sync.
+        _gatedCommands.AddRange(commands.CaretGated);
     }
 
     // Opt into the base Ribbon control theme: control themes resolve exact-key (by the concrete type) through the
@@ -239,6 +243,10 @@ public sealed class EditorRibbon : Ribbon
                 Bind(_commands.Cut),
                 Bind(_commands.Copy),
                 Bind(_commands.Paste)),
+            Group("Format", "F",
+                BindToggle(_commands.Bold),
+                BindToggle(_commands.Italic),
+                BindToggle(_commands.InlineCode)),
             Group("Undo", "U",
                 Button("_Undo", IconUndo(), () => _editor.Undo(), "Ctrl+Z", "Undo the last change."),
                 Button("_Redo", IconRedo(), () => _editor.Redo(), "Ctrl+Y", "Redo the last undone change.")),
@@ -397,6 +405,11 @@ public sealed class EditorRibbon : Ribbon
     // Binds a fresh button to an EXISTING (shared) BarCommand — the button auto-fills its Content/Icon/gesture +
     // SuperTip from the command, so a command shown on more than one surface (Cut/Copy/Paste) is defined once.
     private static BarButton Bind(BarCommand command) => new() { Command = command };
+
+    // The toggle flavour: a fresh CheckableCommandParameter per control — the shared command's canExecute writes the
+    // caret-reflected checked state into it on every re-query (FB-27), so each bound toggle shows the live state.
+    private static BarToggleButton BindToggle(BarCommand command)
+        => new() { Command = command, CommandParameter = new CheckableCommandParameter(false) };
 
     // Define-once on the BarCommand (the Bars self-describing model): Text carries the access-key literal
     // (e.g. "_Paste" — it underlines the mnemonic, registers the Alt+letter accelerator, and seeds the KeyTip

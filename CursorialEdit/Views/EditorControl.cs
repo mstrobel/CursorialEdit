@@ -580,6 +580,15 @@ public class EditorControl : Control, IContentRowMap
     public ColumnAlignment? CaretColumnAlignment => _caret?.TableColumnAlignment();
 
     /// <summary>
+    /// Whether the caret sits strictly inside an inline construct of <paramref name="kind"/> — the state the
+    /// format toggles (Bold/Italic/Inline Code) reflect; see <see cref="DocumentCaret.IsInlineFormatActive"/>.
+    /// </summary>
+    public bool IsCaretFormatActive(InlineRunKind kind) => _caret?.IsInlineFormatActive(kind) ?? false;
+
+    /// <summary>Whether the inline format commands can act at the caret (a non-table block with a document attached).</summary>
+    public bool CanFormatInline => _caret?.CanFormatInline ?? false;
+
+    /// <summary>
     /// Raised after every caret publish (move, edit, selection change — and a view-mode flip, which republishes).
     /// The ribbon re-queries its caret-gated commands here (<c>RaiseCanExecuteChanged</c> — the Bars re-query is
     /// manual by design), so enabled/checked states track the caret without per-command polling.

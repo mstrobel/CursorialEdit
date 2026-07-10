@@ -1,6 +1,8 @@
+using Cursorial.UI;
 using Cursorial.UI.Bars;
 using Cursorial.UI.Themes;
 
+using CursorialEdit.Document.Model;
 using CursorialEdit.Views;
 
 namespace CursorialEdit.App;
@@ -37,14 +39,37 @@ public sealed class EditorCommands
                 Description = description,
             };
 
+        // A format TOGGLE: checkable, reflecting the caret's live inline-format state on every re-query (checked =
+        // the caret sits strictly inside the construct — source-strict, like the alignment radio-set), and gated on
+        // CanFormatInline (greys in tables, where the raw-mark splice is guarded off). Execute is the caret toggle:
+        // unwrap the covering construct when active, wrap the selection when not. The parameter is per-control (a
+        // ribbon toggle carries a CheckableCommandParameter; the MiniToolbar's plain buttons carry none) — the
+        // pattern-match lets one command serve both.
+        BarCommand Format(string text, IconCarrier icon, Action op, InlineRunKind kind, string description) =>
+            new(_ => { op(); editor.Focus(); },
+                p =>
+                {
+                    if (p is CheckableCommandParameter checkable)
+                        checkable.IsChecked = editor.IsCaretFormatActive(kind);
+                    return editor.CanFormatInline;
+                })
+            {
+                Text = text,
+                Icon = icon,
+                IsCheckable = true,
+                Description = description,
+            };
+
         Cut = Command("_Cut", EditorRibbon.IconCut(), () => editor.Cut(), "Ctrl+X", "Cut the selection to the clipboard.");
         Copy = Command("C_opy", EditorRibbon.IconCopy(), () => editor.Copy(), "Ctrl+C", "Copy the selection to the clipboard.");
         Paste = Command("_Paste", EditorRibbon.IconPaste(), () => editor.Paste(), "Ctrl+V", "Paste the clipboard contents at the cursor.");
 
         // Bold/Italic/Inline Code have no keybinding yet (M4), so no gesture is advertised in the SuperTip.
-        Bold = Command("_Bold", EditorRibbon.IconBold(), editor.Bold, gesture: null, "Bold the selected text.");
-        Italic = Command("_Italic", EditorRibbon.IconItalic(), editor.Italic, gesture: null, "Italicize the selected text.");
-        InlineCode = Command("Inline _Code", EditorRibbon.IconInlineCode(), editor.InlineCode, gesture: null, "Format the selection as inline code.");
+        Bold = Format("_Bold", EditorRibbon.IconBold(), editor.Bold, InlineRunKind.Strong, "Toggle bold on the selection.");
+        Italic = Format("_Italic", EditorRibbon.IconItalic(), editor.Italic, InlineRunKind.Emphasis, "Toggle italic on the selection.");
+        InlineCode = Format("Inline _Code", EditorRibbon.IconInlineCode(), editor.InlineCode, InlineRunKind.Code, "Toggle inline code on the selection.");
+
+        CaretGated = [Bold, Italic, InlineCode];
     }
 
     /// <summary>Cut the selection to the clipboard (ribbon Home + context bar).</summary>
@@ -56,12 +81,19 @@ public sealed class EditorCommands
     /// <summary>Paste the clipboard contents at the cursor (ribbon Home + context bar).</summary>
     public BarCommand Paste { get; }
 
-    /// <summary>Bold the selection (context bar; a future ribbon Format group).</summary>
+    /// <summary>Toggle bold at the caret/selection (ribbon Home Format group + context bar) — checkable, reflecting.</summary>
     public BarCommand Bold { get; }
 
-    /// <summary>Italicize the selection (context bar; a future ribbon Format group).</summary>
+    /// <summary>Toggle italic at the caret/selection (ribbon Home Format group + context bar) — checkable, reflecting.</summary>
     public BarCommand Italic { get; }
 
-    /// <summary>Format the selection as inline code (context bar; a future ribbon Format group).</summary>
+    /// <summary>Toggle inline code at the caret/selection (ribbon Home Format group + context bar) — checkable, reflecting.</summary>
     public BarCommand InlineCode { get; }
+
+    /// <summary>
+    /// The shared commands whose <c>canExecute</c> reads live caret state (the format toggles) — the ribbon
+    /// enlists these into its re-query batch (<c>EditorControl.CaretUpdated</c> → <c>RaiseCanExecuteChanged</c>),
+    /// so every bound control (ribbon toggle, MiniToolbar button) re-reads enabled + checked per caret publish.
+    /// </summary>
+    public IReadOnlyList<BarCommand> CaretGated { get; }
 }

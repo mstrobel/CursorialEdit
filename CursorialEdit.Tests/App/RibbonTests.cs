@@ -58,12 +58,13 @@ public sealed class RibbonTests
 
         Assert.Equal(new[] { "Home", "Table", "View" }, Tabs(ribbon).Select(t => (string?)t.Header));
 
-        Assert.Equal(new[] { "Clipboard", "Undo", "Edit" }, GroupHeaders(ribbon, "Home"));
+        Assert.Equal(new[] { "Clipboard", "Format", "Undo", "Edit" }, GroupHeaders(ribbon, "Home"));
         Assert.Equal(new[] { "Insert", "Delete", "Move", "Cells" }, GroupHeaders(ribbon, "Table"));
         Assert.Equal(new[] { "Mode", "Wrap", "Overflow" }, GroupHeaders(ribbon, "View"));
 
-        // The Clipboard group carries Cut / Copy / Paste (the large button), Undo carries Undo / Redo.
+        // The Clipboard group carries Cut / Copy / Paste (the large button), Format the shared toggles, Undo the pair.
         Assert.Equal(new[] { "Cut", "Copy", "Paste" }, ButtonLabels(ribbon, "Home", "Clipboard"));
+        Assert.Equal(new[] { "Bold", "Italic", "Inline Code" }, ButtonLabels(ribbon, "Home", "Format"));
         Assert.Equal(new[] { "Undo", "Redo" }, ButtonLabels(ribbon, "Home", "Undo"));
     }
 
@@ -411,6 +412,92 @@ public sealed class RibbonTests
         SelectTab(shell.Ribbon, "Table");           // …and the re-attached table band re-reads the gate
         Assert.True(host.RunUntilIdle());
         Assert.True(rowBelow.IsEffectivelyEnabled);
+    }
+
+    // ───────────────────────────── format toggles: reflect the caret, unwrap on invoke ─────────────────────────────
+
+    [Fact] // checked = caret strictly inside the construct; invoking while active UNWRAPS (removes the marks)
+    public void FormatToggles_ReflectCaret_AndUnwrapOnInvoke()
+    {
+        var (host, shell) = Shell("plain **bold** text", columns: 48, rows: 10);
+        using var _ = host;
+        var caret = shell.Editor.DocumentCaretPart!;
+
+        SelectTab(shell.Ribbon, "Home");
+        Assert.True(host.RunUntilIdle());
+        var bold = (BarToggleButton)FindButtonInGroup(shell.Ribbon, "Home", "Format", "Bold");
+
+        // Caret in "plain" — unchecked (and enabled: prose block).
+        caret.ClickAt(2, 0);
+        Assert.True(host.RunUntilIdle());
+        Assert.True(bold.IsEffectivelyEnabled);
+        Assert.NotEqual(true, bold.IsChecked);
+
+        // Into the bold span. The caret's line is the ACTIVE line (the caret started in this block), so
+        // reveal-on-edit shows the marks and cells are SOURCE columns: "plain **bold** text", 'o' at cell 9.
+        caret.ClickAt(9, 0);
+        Assert.True(host.RunUntilIdle());
+        Assert.Equal(true, bold.IsChecked); // reflects the covering Strong run
+
+        // Invoke while active: the toggle UNWRAPS — the marks are spliced out, the text survives.
+        bold.Command!.Execute(bold.CommandParameter);
+        Assert.True(host.RunUntilIdle());
+        Assert.Equal("plain bold text", shell.Document!.GetText());
+        Assert.NotEqual(true, bold.IsChecked); // nothing bold at the caret anymore
+
+        // One undo restores the marks (the unwrap is one structural group).
+        host.SendKey(Cursorial.Input.Key.Character, KeyModifiers.Control, "z");
+        Assert.True(host.RunUntilIdle());
+        Assert.Equal("plain **bold** text", shell.Document!.GetText());
+    }
+
+    [Fact] // ***x*** carries BOTH runs: unwrapping Italic strips one star per side and leaves the bold intact
+    public void ItalicUnwrap_InsideBoldItalic_LeavesTheBold()
+    {
+        var (host, shell) = Shell("a ***xy*** b", columns: 48, rows: 10);
+        using var _ = host;
+        var caret = shell.Editor.DocumentCaretPart!;
+
+        SelectTab(shell.Ribbon, "Home");
+        Assert.True(host.RunUntilIdle());
+        var bold = (BarToggleButton)FindButtonInGroup(shell.Ribbon, "Home", "Format", "Bold");
+        var italic = (BarToggleButton)FindButtonInGroup(shell.Ribbon, "Home", "Format", "Italic");
+
+        // The caret's line is ACTIVE (revealed — marks visible, cells are source columns): "a ***xy*** b",
+        // 'y' at cell 6. Mid-span, strictly inside BOTH overlapping runs; a span-boundary click would honestly
+        // reflect unchecked (the caret would sit before the marks).
+        caret.ClickAt(6, 0);
+        Assert.True(host.RunUntilIdle());
+        Assert.Equal(true, bold.IsChecked);   // Strong covers the caret…
+        Assert.Equal(true, italic.IsChecked); // …and so does Emphasis (overlapping runs)
+
+        italic.Command!.Execute(italic.CommandParameter);
+        Assert.True(host.RunUntilIdle());
+        Assert.Equal("a **xy** b", shell.Document!.GetText()); // one star trimmed per side — the bold survives
+        Assert.Equal(true, bold.IsChecked);
+        Assert.NotEqual(true, italic.IsChecked);
+    }
+
+    [Fact] // the format toggles grey inside a table (the raw-mark splice is guarded off cells) and recover outside
+    public void FormatToggles_GreyInsideATable()
+    {
+        var (host, shell) = Shell("para\n\n| A | B |\n|---|---|\n| 1 | 2 |\n", columns: 48, rows: 20);
+        using var _ = host;
+        var caret = shell.Editor.DocumentCaretPart!;
+
+        SelectTab(shell.Ribbon, "Home");
+        Assert.True(host.RunUntilIdle());
+        var bold = (BarToggleButton)FindButtonInGroup(shell.Ribbon, "Home", "Format", "Bold");
+        Assert.True(bold.IsEffectivelyEnabled); // prose caret (0,0)
+
+        caret.ClickAt(2, 5); // the table body row (para 0, blank 1, border 2, header 3, separator 4)
+        Assert.True(host.RunUntilIdle());
+        Assert.True(caret.IsInTable, "the caret is in the table body row");
+        Assert.False(bold.IsEffectivelyEnabled); // cell formatting is the table controller's job — greyed here
+
+        host.SendKey(Key.Home, KeyModifiers.Control);
+        Assert.True(host.RunUntilIdle());
+        Assert.True(bold.IsEffectivelyEnabled);
     }
 
     // ───────────────────────────── helpers ─────────────────────────────
