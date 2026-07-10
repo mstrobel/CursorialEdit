@@ -305,10 +305,20 @@ public sealed class EditorRibbon : Ribbon
     private BarCommand BuildAlignmentCommand()
     {
         var command = new BarCommand(
-            execute: p => Run(() => _editor.TableSetColumnAlignment(((ValueCommandParameter<ColumnAlignment>)p!).Value)),
+            execute: p => Run(() =>
+            {
+                // Toggle-off: invoking the CHECKED alignment clears the column back to unspecified (`---`) —
+                // checked state is strict source markup (None checks nothing), so this is the ribbon's only way
+                // to REMOVE an alignment. The comparison reads the model (CaretColumnAlignment), never the
+                // parameter's IsChecked, so a control pre-flipping its visual state cannot skew the decision.
+                var value = ((ValueCommandParameter<ColumnAlignment>)p!).Value;
+                _editor.TableSetColumnAlignment(_editor.CaretColumnAlignment == value ? ColumnAlignment.None : value);
+            }),
             canExecute: p =>
             {
                 // The wiring re-query can arrive before the parameter is installed — pattern-match, don't cast.
+                // Strict reflection: checked = the delimiter's EXPLICIT marker; an unspecified column (None,
+                // GFM-rendered left) checks nothing — the check mirrors the source, not the rendered default.
                 if (p is ValueCommandParameter<ColumnAlignment> vp)
                     vp.IsChecked = _editor.CaretColumnAlignment is { } current && vp.Value == current;
                 return _editor.IsCaretInTable;
@@ -316,7 +326,7 @@ public sealed class EditorRibbon : Ribbon
         {
             Text = "Align",
             IsCheckable = true,
-            Description = "Set the current column's alignment.",
+            Description = "Set the current column's alignment; selecting the active alignment clears it.",
         };
 
         _gatedCommands.Add(command);

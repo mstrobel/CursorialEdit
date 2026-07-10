@@ -363,6 +363,16 @@ public sealed class RibbonTests
         Assert.Equal(true, center.IsChecked);
         Assert.NotEqual(true, right.IsChecked);
         Assert.Contains(":---:", shell.Document!.GetText()); // the rewritten delimiter (center) round-trips to source
+
+        // Toggle-off: invoking the CHECKED alignment clears the column back to unspecified (`---`) — the strict
+        // reflection then checks NOTHING for this column (None carries no toggle; GFM renders it left by default).
+        center.Command!.Execute(center.CommandParameter);
+        Assert.True(host.RunUntilIdle());
+        Assert.NotEqual(true, center.IsChecked);
+        Assert.NotEqual(true, left.IsChecked);
+        Assert.NotEqual(true, right.IsChecked);
+        Assert.DoesNotContain(":---:", shell.Document!.GetText()); // column B's delimiter is back to `---`
+        Assert.Contains(":---", shell.Document!.GetText());        // column A's explicit LEFT marker is untouched
     }
 
     [Fact] // Raw mode: no TableModel is served and there is no reveal — table ops AND the Wrap toggle lock; Formatted restores
