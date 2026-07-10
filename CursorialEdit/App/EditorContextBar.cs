@@ -17,18 +17,19 @@ namespace CursorialEdit.App;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Same commands, same icons.</b> Every button binds a <see cref="BarCommand"/> whose action calls a REAL
-/// operation on the persistent <see cref="EditorControl"/> — the same <see cref="EditorControl.Cut"/>/
-/// <see cref="EditorControl.Copy"/>/<see cref="EditorControl.Paste"/> the ribbon and keyboard use, plus the new
-/// <see cref="EditorControl.Bold"/>/<see cref="EditorControl.Italic"/>/<see cref="EditorControl.InlineCode"/>. The
-/// clipboard/format icons come from the shared <see cref="EditorRibbon"/> <c>Icon*</c> factories (one icon
-/// vocabulary — a tiered Nerd Font <see cref="Icon"/> over a width-1 Unicode floor), verified by <c>ContextBarTests</c>.
+/// <b>Same commands, same icons — self-describing.</b> Every button binds a <see cref="BarCommand"/> that carries the
+/// action (a REAL operation on the persistent <see cref="EditorControl"/> — the same <see cref="EditorControl.Cut"/>/
+/// <see cref="EditorControl.Copy"/>/<see cref="EditorControl.Paste"/> the ribbon and keyboard use, plus
+/// <see cref="EditorControl.Bold"/>/<see cref="EditorControl.Italic"/>/<see cref="EditorControl.InlineCode"/>), a
+/// label, and a tiered <see cref="IconCarrier"/> from the shared <see cref="EditorRibbon"/> <c>Icon*</c> factories
+/// (one icon vocabulary — a Nerd Font <see cref="Icon"/> over a width-1 Unicode floor). The button auto-fills its
+/// Content/Icon and the hover SuperTip from the command. Verified by <c>ContextBarTests</c>.
 /// </para>
 /// <para>
-/// <b>Icon-only.</b> Each button carries the tiered <see cref="Icon"/> on its <see cref="BarButton.Icon"/> tier and an explicit empty
-/// <see cref="ContentControl.Content"/> — the empty local value keeps the <see cref="BarCommand"/> auto-fill from
-/// grafting the command's <c>Text</c> in as a label, so the strip stays a compact icon row while the command still
-/// carries its label for identity and hover help.
+/// <b>Icon-only via Compact density.</b> The strip shows icons only because a <see cref="MiniToolbar"/> is
+/// automatically Compact (<see cref="Ribbon.IsDensityCompact"/>), which <b>hides</b> the auto-filled label rather than
+/// discarding it — so the command keeps its label for identity, the SuperTip, and a future labeled layout. (No empty
+/// <see cref="ContentControl.Content"/> is pinned; that would throw the label away.)
 /// </para>
 /// <para>
 /// <b>Keep typing.</b> After a command runs the editor is re-focused (<see cref="Run"/>), so an action taken from
@@ -58,15 +59,17 @@ public sealed class EditorContextBar
     /// <summary>The strip itself — attach it with <see cref="MiniToolbar.SetBar"/> on the right-click target.</summary>
     public MiniToolbar Bar { get; }
 
-    // An icon-only bar button: the tiered IconCarrier on the Icon tier (the theme templates it into an Icon per host),
-    // an explicit empty Content so the BarCommand auto-fill never grafts the command Text in as a label, and a
-    // BarCommand carrying the display label + running `op`.
+    // A bar button, self-describing through its BarCommand: the command carries the tiered IconCarrier (the button
+    // auto-fills its Icon, which the theme templates into an Icon per host) and the display label (auto-filled into
+    // Content and the hover SuperTip). The strip renders icon-only because a MiniToolbar is automatically Compact
+    // (Ribbon.IsDensityCompact) — the density HIDES the label rather than discarding it, so a future labeled layout
+    // still has it. Do NOT pin an empty Content, which would throw the label away.
     private BarButton IconButton(IconCarrier icon, string text, Action op)
     {
         // Bool-returning Cut/Copy/Paste are wrapped by the caller as `() => _editor.Xxx()` (the result is discarded —
         // the strip runs the op unconditionally, like the ribbon does, unlike the keybind which bubbles on no-op).
-        var command = new BarCommand(() => Run(op)) { Text = text };
-        return new BarButton { Icon = icon, Content = string.Empty, Command = command };
+        var command = new BarCommand(() => Run(op)) { Text = text, Icon = icon };
+        return new BarButton { Command = command };
     }
 
     // Run the op, then return focus to the editor so typing continues immediately (the "keep typing" bar model);

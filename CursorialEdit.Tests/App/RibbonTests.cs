@@ -311,7 +311,11 @@ public sealed class RibbonTests
 
     private static string[] ButtonLabels(EditorRibbon ribbon, string tab, string group)
         => Groups(Tab(ribbon, tab)).Single(g => (string?)g.Header == group)
-            .Items.OfType<ButtonBase>().Select(b => ((BarCommand)b.Command!).Text!).ToArray();
+            .Items.OfType<ButtonBase>().Select(CommandLabel).ToArray();
+
+    // The button's DISPLAY label — the command's Text with its access-key literal stripped ("_Paste" ⇒ "Paste").
+    // The self-describing BarButton sources Content/Icon/SuperTip from the command, so its label IS the command's Text.
+    private static string CommandLabel(ButtonBase button) => AccessText.Parse(((BarCommand)button.Command!).Text ?? "").Text;
 
     private static IEnumerable<ButtonBase> AllButtons(EditorRibbon ribbon)
         => Tabs(ribbon).SelectMany(Groups).SelectMany(g => g.Items.OfType<ButtonBase>());
@@ -330,7 +334,7 @@ public sealed class RibbonTests
     {
         foreach (var group in Groups(Tab(ribbon, tab)))
             foreach (var item in group.Items)
-                if (item is ButtonBase b && b.Command is BarCommand cmd && cmd.Text == label)
+                if (item is ButtonBase b && b.Command is BarCommand && CommandLabel(b) == label)
                     return b;
 
         throw new Xunit.Sdk.XunitException($"no button '{label}' on tab '{tab}'");
@@ -342,7 +346,7 @@ public sealed class RibbonTests
     {
         var g = Groups(Tab(ribbon, tab)).Single(gr => (string?)gr.Header == group);
         foreach (var item in g.Items)
-            if (item is ButtonBase b && b.Command is BarCommand cmd && cmd.Text == label)
+            if (item is ButtonBase b && b.Command is BarCommand && CommandLabel(b) == label)
                 return b;
 
         throw new Xunit.Sdk.XunitException($"no button '{label}' in group '{group}' on tab '{tab}'");

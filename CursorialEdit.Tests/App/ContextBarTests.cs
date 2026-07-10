@@ -58,12 +58,16 @@ public sealed class ContextBarTests
         Assert.Single(bar.Items.OfType<BarSeparator>());
         Assert.IsType<BarSeparator>(bar.Items[3]); // the separator sits between the clipboard and format clusters
 
-        // Icon-only: every button carries a tiered Icon on the Icon tier and an explicit EMPTY Content (no label).
+        // Self-describing: every button auto-fills a tiered icon AND the command's label as Content (present, not
+        // blanked). The strip renders icon-only because a MiniToolbar is automatically Compact — which HIDES the
+        // label rather than discarding it (so a future labeled layout keeps it).
         foreach (var button in bar.Items.OfType<BarButton>())
         {
             Assert.IsType<IconCarrier>(button.Icon);
-            Assert.Equal(string.Empty, button.Content);
+            Assert.Equal(((BarCommand)button.Command!).Text, button.Content); // label auto-filled from the command
         }
+
+        Assert.True(Ribbon.GetIsDensityCompact(bar)); // icon-only is the Compact density, not a blanked Content
     }
 
     [Fact] // Every strip icon is a tiered Nerd Font Icon: one PUA Glyph codepoint over a width-1, no-VS16 Text floor

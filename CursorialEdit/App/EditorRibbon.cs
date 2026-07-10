@@ -24,14 +24,15 @@ namespace CursorialEdit.App;
 /// does not disturb typing.
 /// </para>
 /// <para>
-/// <b>Tiered icons.</b> Every button carries a capability-tiered <see cref="Icon"/> on its
-/// <see cref="BarButton.Icon"/> tier (only the image tier is left null — PNGs procured in M5+): a Nerd Font
-/// Material-Design (<c>nf-md-*</c>) <see cref="Icon.Glyph"/> preferred when <see cref="UIApplication.NerdFontAvailable"/>,
-/// an opt-in color-<see cref="Icon.Emoji"/> tier, and the guaranteed <see cref="Icon.Text"/> floor — the same width-1,
-/// text-presentation Unicode glyph the toolbar carried before the Nerd Font tier landed (no VS16, never a 2-wide
-/// color-emoji sprite). Codepoints are pinned in <c>docs/icon-ledger.md</c> against Nerd Fonts glyphnames.json;
-/// see the <c>Icon*</c> factories (each returns a fresh instance — an <see cref="Icon"/> is a Control and cannot be
-/// double-parented). Verified by <c>RibbonTests.EveryRibbonButton_HasATieredNerdFontIconWithAWidthOneTextFloor</c>.
+/// <b>Tiered icons.</b> Every <see cref="BarCommand"/> carries a capability-tiered <see cref="IconCarrier"/> on its
+/// <see cref="BarCommand.Icon"/> (the button auto-fills its icon from the command; only the image tier is left null —
+/// PNGs procured in M5+): a Nerd Font Material-Design (<c>nf-md-*</c>) <see cref="Icon.Glyph"/> preferred when
+/// <see cref="UIApplication.NerdFontAvailable"/>, an opt-in color-<see cref="Icon.Emoji"/> tier, and the guaranteed
+/// <see cref="Icon.Text"/> floor — the same width-1, text-presentation Unicode glyph the toolbar carried before the
+/// Nerd Font tier landed (no VS16, never a 2-wide color-emoji sprite). Codepoints are pinned in
+/// <c>docs/icon-ledger.md</c> against Nerd Fonts glyphnames.json; see the <c>Icon*</c> factories (each returns an
+/// <see cref="IconCarrier"/> — an immutable descriptor the theme templates into a fresh <see cref="Icon"/> per host,
+/// so it is safe on a command a control may share). Verified by <c>RibbonTests.EveryRibbonButton_HasATieredNerdFontIconWithAWidthOneTextFloor</c>.
 /// </para>
 /// <para>
 /// <b>KeyTips / access keys.</b> Every button folds an access-key literal into its <see cref="ContentControl.Content"/>
@@ -79,12 +80,12 @@ public sealed class EditorRibbon : Ribbon
     // \U000Fxxxx 8-digit escape (NOT \uXXXX, which stops at U+FFFF). RibbonTests re-verifies every Glyph is one
     // PUA codepoint and every Text floor is a width-1/no-VS16 grapheme, so a bad codepoint fails the suite.
     //
-    // An Icon is a visual (a Control) and cannot be shared or double-parented — and the Bars button template hosts the
-    // Icon property in TWO content presenters (a normal PART_Icon and a large PART_LargeIcon), so a live Icon would be
-    // parented twice and throw. These factories therefore return an IconCarrier: an immutable value descriptor the
-    // theme TEMPLATES into a fresh Icon at each host (Cursorial.UI.Themes.IconCarrier). A carrier is freely shareable,
-    // but each call still returns its own so the ledger reads one-icon-per-command. The clipboard/format factories are
-    // `internal` so the right-click MiniToolbar (EditorContextBar) shares the SAME icon vocabulary as the ribbon.
+    // The icons live on each BarCommand (BarCommand.Icon), not the button — a command may bind more than one control,
+    // and IconCarrier is the type required there: an immutable value descriptor the theme TEMPLATES into a fresh Icon
+    // at each host (Cursorial.UI.Themes.IconCarrier), so it is safe to share where a live Icon (a visual Control that
+    // cannot be double-parented) would not be. Each factory still returns its own carrier, so the ledger reads
+    // one-icon-per-command. The clipboard/format factories are `internal` so the right-click MiniToolbar
+    // (EditorContextBar) shares the SAME icon vocabulary as the ribbon.
     internal static IconCarrier IconCut() => Nf("\U000F0190", "✁", "✂️");    // nf-md-content_cut U+F0190 · floor U+2701 ✁
     internal static IconCarrier IconCopy() => Nf("\U000F018F", "⧉", "📋");    // nf-md-content_copy U+F018F · floor U+29C9 ⧉
     internal static IconCarrier IconPaste() => Nf("\U000F0192", "▤", "📋");   // nf-md-content_paste U+F0192 · floor U+25A4 ▤
@@ -308,22 +309,23 @@ public sealed class EditorRibbon : Ribbon
         _editor.Focus();
     }
 
-    // `content` folds an access-key literal (e.g. "_Paste"): it underlines the mnemonic, registers the Alt+letter
-    // accelerator, and seeds the KeyTip badge. The command's Text is the clean display label (underscore stripped)
-    // used for tooltips and command identity; `icon` is a tiered Icon (set directly on the control, so the
-    // BarCommand auto-fill preserves it).
-    private BarButton Button(string content, IconCarrier icon, Action op, string? gesture = null)
+    // Define-once on the BarCommand (the Bars self-describing model): Text carries the access-key literal
+    // (e.g. "_Paste" — it underlines the mnemonic, registers the Alt+letter accelerator, and seeds the KeyTip
+    // badge), `icon` the tiered IconCarrier, `gesture` the shortcut, and `description` the SuperTip body. The
+    // BarButton auto-fills its Content/Icon/InputGestureText from the command and builds the SuperTip (title =
+    // Text, shortcut = gesture, body = Description) — no display metadata is set on the button itself.
+    private BarButton Button(string content, IconCarrier icon, Action op, string? gesture = null, string? description = null)
     {
         // Bool-returning ops (Copy/Cut/Paste/Undo/Redo) are wrapped by the caller as `() => _editor.Xxx()`
         // — the result is discarded (the ribbon runs the op unconditionally, unlike the keybind which bubbles).
-        var command = new BarCommand(() => Run(op)) { Text = AccessText.Parse(content).Text, InputGestureText = gesture };
-        return new BarButton { Content = content, Icon = icon, Command = command };
+        var command = new BarCommand(() => Run(op)) { Text = content, Icon = icon, InputGestureText = gesture, Description = description };
+        return new BarButton { Command = command };
     }
 
-    private BarToggleButton Toggle(string content, IconCarrier icon, CheckableCommandParameter checkedState, Action toggle, string? gesture = null)
+    private BarToggleButton Toggle(string content, IconCarrier icon, CheckableCommandParameter checkedState, Action toggle, string? gesture = null, string? description = null)
     {
-        var command = new BarCommand(() => Run(toggle)) { Text = AccessText.Parse(content).Text, InputGestureText = gesture, IsCheckable = true };
-        return new BarToggleButton { Content = content, Icon = icon, Command = command, CommandParameter = checkedState };
+        var command = new BarCommand(() => Run(toggle)) { Text = content, Icon = icon, InputGestureText = gesture, IsCheckable = true, Description = description };
+        return new BarToggleButton { Command = command, CommandParameter = checkedState };
     }
 
     private static RibbonGroup Group(string header, string keyTip, params UIElement[] items)
