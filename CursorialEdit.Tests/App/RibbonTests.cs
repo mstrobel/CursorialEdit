@@ -414,6 +414,34 @@ public sealed class RibbonTests
         Assert.True(rowBelow.IsEffectivelyEnabled);
     }
 
+    [Fact] // rapid Delete Row (Mike's journal crash): the gating re-query arrives MID-SPLICE — the producer's
+           // change feed republishes the caret while the buffer has already shrunk but the post-splice caret is
+           // not yet installed. The stale position must read as "no state" (transient), never throw out of Apply.
+    public void DeleteRow_MidSpliceRequery_DoesNotThrowOnTheStaleCaret()
+    {
+        // A long last body row + a trailing newline: deleting the row leaves the caret's LINE pointing at the
+        // trailing empty line while its COLUMN is deep past it — exactly the crash's stale shape.
+        var (host, shell) = Shell("| A | B |\n|---|---|\n| 111111111 | 222222222 |\n", columns: 48, rows: 20);
+        using var _ = host;
+        var caret = shell.Editor.DocumentCaretPart!;
+
+        SelectTab(shell.Ribbon, "Table");
+        Assert.True(host.RunUntilIdle());
+
+        // Deep into the body row's SECOND cell (grid row 3; content column ~20) — a high source column.
+        caret.ClickAt(20, 3);
+        Assert.True(host.RunUntilIdle());
+        Assert.True(caret.IsInTable, "the caret is in the table body row");
+        Assert.True(caret.Position.Col > 0, "the caret sits at a non-zero column");
+
+        // Pre-fix: ArgumentOutOfRangeException out of TableColumnAlignment (GetOffset on the stale caret)
+        // thrown MID-Apply through the re-query — the frame loop dies. Post-fix: the transient reads as
+        // no-state and the delete completes.
+        Invoke(shell, "Table", "Delete Row");
+        Assert.True(host.RunUntilIdle());
+        Assert.DoesNotContain("111111111", shell.Document!.GetText()); // the row is gone
+    }
+
     // ───────────────────────────── format toggles: reflect the caret, unwrap on invoke ─────────────────────────────
 
     [Fact] // checked = caret strictly inside the construct; invoking while active UNWRAPS (removes the marks)

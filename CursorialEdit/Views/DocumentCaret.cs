@@ -885,7 +885,8 @@ internal sealed class DocumentCaret : ISelectionSource
     /// </summary>
     private (int BlockIndex, InlineRun Run)? FindActiveInlineRun(InlineRunKind kind)
     {
-        if (_buffer.LineCount == 0 || Blocks.Count == 0 || BlockAtLineIsTable(_position.Line))
+        // CaretPositionSettled: the gating re-query can arrive mid-splice with a stale caret (see its remarks).
+        if (_buffer.LineCount == 0 || Blocks.Count == 0 || !CaretPositionSettled() || BlockAtLineIsTable(_position.Line))
             return null;
 
         int blockIndex = Blocks.IndexOfLine(_position.Line);
@@ -1079,13 +1080,25 @@ internal sealed class DocumentCaret : ISelectionSource
     /// </summary>
     public ColumnAlignment? TableColumnAlignment()
     {
-        if (!TryTableContext(out var model, out int blockStart))
+        if (!CaretPositionSettled() || !TryTableContext(out var model, out int blockStart))
             return null;
 
         return model.CellOfOffset(_buffer.GetOffset(_position) - blockStart) is { } cell
             ? model.Alignment(cell.Column)
             : null;
     }
+
+    /// <summary>
+    /// Whether <c>_position</c> currently points INSIDE the buffer. Normally always true — but the ribbon's
+    /// gating re-query can arrive <b>mid-splice</b> (the producer's change feed → heights → caret republish →
+    /// <c>CaretUpdated</c>), when the buffer has already shrunk and the post-splice caret has not been installed
+    /// yet (<c>RunTableCommand</c> sets it only after <c>Apply</c> returns). The state queries treat that
+    /// transient as "no state" (null/false for one re-query tick) — the post-splice caret install immediately
+    /// re-queries with the settled position — rather than letting <c>GetOffset</c>'s validation throw out of
+    /// <c>Apply</c> (the rapid Delete-Row crash).
+    /// </summary>
+    private bool CaretPositionSettled()
+        => _position.Line < _buffer.LineCount && _position.Col <= _buffer.GetLine(_position.Line).Text.Length;
 
     /// <summary>Tab / Shift+Tab inside a table: move to the next / previous cell (wrapping rows; last-cell Tab appends a row) — spec §5.3.</summary>
     public void TableTab(bool shift)
