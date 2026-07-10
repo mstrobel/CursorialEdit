@@ -56,9 +56,14 @@ namespace CursorialEdit.App;
 /// active choice is a no-op (radio semantics, never a toggle-off).
 /// </para>
 /// <para>
-/// <b>FB-27 (deferred).</b> Context-gating the Table ops (greying them out when the caret is not in a table) is
-/// the separate framework work item FB-27; the buttons are left always-enabled here — the underlying ops
-/// already no-op safely outside a table.
+/// <b>Context gating (FB-27, live).</b> Every Table command's <c>canExecute</c> reads
+/// <see cref="EditorControl.IsCaretInTable"/>, so the ops grey off-table (and in Raw mode, where the bridge serves
+/// no table model); the alignment buttons are a <b>reflecting radio-set</b> — one shared command whose re-query
+/// writes each <see cref="ValueCommandParameter{T}"/>'s checked state from the caret column's live delimiter
+/// alignment (<see cref="EditorControl.CaretColumnAlignment"/>); and the Wrap toggle locks in Raw mode (no reveal
+/// to wrap). Re-query is the Bars manual model: <see cref="EditorControl.CaretUpdated"/> and
+/// <see cref="EditorControl.ViewModeChanged"/> re-raise <c>CanExecuteChanged</c> on the gated set, and each bound
+/// control re-reads enabled + checked in one pass (CD25). The ops still no-op safely as a belt-and-suspenders.
 /// </para>
 /// <para>
 /// <b>Toggle re-sync on document reload (deferred).</b> A fresh document resets the bridge to its defaults
@@ -142,6 +147,11 @@ public sealed class EditorRibbon : Ribbon
     private BarCommand _overflowWrapCommand = null!;
     private BarCommand _overflowTruncateCommand = null!;
 
+    // Every command whose canExecute reads live editor state (caret-in-table, view mode) — re-raised as one batch
+    // by RequeryGatedCommands on each caret publish / mode flip (the Bars manual-requery model). Populated by the
+    // Button/Toggle helpers (a non-null canExecute enlists the command) and the alignment radio-set.
+    private readonly List<BarCommand> _gatedCommands = [];
+
     private bool _viewModeSubscribed;
 
     /// <summary>Builds the ribbon over <paramref name="editor"/> (the shell's persistent editor surface).</summary>
@@ -179,8 +189,10 @@ public sealed class EditorRibbon : Ribbon
             return;
 
         _editor.ViewModeChanged += OnEditorViewModeChanged;
+        _editor.CaretUpdated += RequeryGatedCommands;
         _viewModeSubscribed = true;
         OnEditorViewModeChanged(); // reflect the current mode on attach (a Raw document shows the toggle checked)
+        RequeryGatedCommands();    // seed the gates (table ops grey until the caret enters a table)
     }
 
     /// <inheritdoc/>
@@ -189,6 +201,7 @@ public sealed class EditorRibbon : Ribbon
         if (_viewModeSubscribed)
         {
             _editor.ViewModeChanged -= OnEditorViewModeChanged;
+            _editor.CaretUpdated -= RequeryGatedCommands;
             _viewModeSubscribed = false;
         }
 
@@ -196,11 +209,23 @@ public sealed class EditorRibbon : Ribbon
     }
 
     // The Raw toggle mirrors EditorControl.ViewMode; re-query the command so the bound BarToggleButton re-reads
-    // the checked state (whether the flip came from the ribbon or the keyboard).
+    // the checked state (whether the flip came from the ribbon or the keyboard). The gates re-query too: Raw mode
+    // greys the table ops (no TableModel is served) and locks the Wrap toggle (no reveal to wrap).
     private void OnEditorViewModeChanged()
     {
         _rawChecked.IsChecked = _editor.ViewMode == ViewMode.Raw;
         _rawCommand.RaiseCanExecuteChanged();
+        RequeryGatedCommands();
+    }
+
+    // The FB-27 gating re-query (the Bars model is manual-requery by design): every caret publish re-raises
+    // CanExecuteChanged on the caret-/mode-gated commands, so each bound control re-reads BOTH its enabled state
+    // (IsEnabledCore → canExecute — CD25) and its command-owned checked state (the checkable/value parameters the
+    // canExecute writes) in one pass. The re-query is cheap (a block lookup per command), so no dirty-tracking.
+    private void RequeryGatedCommands()
+    {
+        foreach (var command in _gatedCommands)
+            command.RaiseCanExecuteChanged();
     }
 
     // ───────────────────────────── Home ─────────────────────────────
@@ -225,32 +250,77 @@ public sealed class EditorRibbon : Ribbon
 
     private RibbonTab BuildTableTab()
     {
-        // TODO(FB-27): gate every Table command on caret-in-table (pass a canExecute reading a
-        // coerced "caret in a table" state) once that framework coercion lands. Until then the buttons
-        // stay always-enabled; the ops themselves no-op safely off a table.
+        // FB-27 gating (LIVE): every table command's canExecute reads EditorControl.IsCaretInTable — buttons grey
+        // off-table (and in Raw mode, where the bridge serves no TableModel) and re-enable when the caret enters a
+        // table (RequeryGatedCommands on every caret publish). The ops still no-op safely as a belt-and-suspenders.
+        Func<bool> inTable = () => _editor.IsCaretInTable;
+
         return Tab("Table", "T",
             Group("Insert", "I",
-                Button("Row _Above", IconInsertRowAbove(), _editor.TableInsertRowAbove, "Alt+↑", "Insert a row above the current row."),
-                Button("Row _Below", IconInsertRowBelow(), _editor.TableInsertRowBelow, "Alt+↓", "Insert a row below the current row."),
-                Button("Column _Left", IconInsertColLeft(), _editor.TableInsertColumnLeft, description: "Insert a column to the left."),
-                Button("Column _Right", IconInsertColRight(), _editor.TableInsertColumnRight, description: "Insert a column to the right.")),
+                Button("Row _Above", IconInsertRowAbove(), _editor.TableInsertRowAbove, "Alt+↑", "Insert a row above the current row.", inTable),
+                Button("Row _Below", IconInsertRowBelow(), _editor.TableInsertRowBelow, "Alt+↓", "Insert a row below the current row.", inTable),
+                Button("Column _Left", IconInsertColLeft(), _editor.TableInsertColumnLeft, description: "Insert a column to the left.", canExecute: inTable),
+                Button("Column _Right", IconInsertColRight(), _editor.TableInsertColumnRight, description: "Insert a column to the right.", canExecute: inTable)),
             Group("Delete", "D",
-                Button("Delete _Row", IconDeleteRow(), _editor.TableDeleteRow, description: "Delete the current row."),
-                Button("Delete _Column", IconDeleteCol(), _editor.TableDeleteColumn, description: "Delete the current column."),
-                Button("Delete _Table", IconDeleteTable(), _editor.TableDelete, description: "Delete the entire table.")),
+                Button("Delete _Row", IconDeleteRow(), _editor.TableDeleteRow, description: "Delete the current row.", canExecute: inTable),
+                Button("Delete _Column", IconDeleteCol(), _editor.TableDeleteColumn, description: "Delete the current column.", canExecute: inTable),
+                Button("Delete _Table", IconDeleteTable(), _editor.TableDelete, description: "Delete the entire table.", canExecute: inTable)),
             Group("Move", "M",
-                Button("Row _Up", IconMoveRowUp(), _editor.TableMoveRowUp, description: "Move the current row up."),
-                Button("Row _Down", IconMoveRowDown(), _editor.TableMoveRowDown, description: "Move the current row down."),
-                Button("Column _Left", IconMoveColLeft(), _editor.TableMoveColumnLeft, description: "Move the current column left."),
-                Button("Column _Right", IconMoveColRight(), _editor.TableMoveColumnRight, description: "Move the current column right.")),
+                Button("Row _Up", IconMoveRowUp(), _editor.TableMoveRowUp, description: "Move the current row up.", canExecute: inTable),
+                Button("Row _Down", IconMoveRowDown(), _editor.TableMoveRowDown, description: "Move the current row down.", canExecute: inTable),
+                Button("Column _Left", IconMoveColLeft(), _editor.TableMoveColumnLeft, description: "Move the current column left.", canExecute: inTable),
+                Button("Column _Right", IconMoveColRight(), _editor.TableMoveColumnRight, description: "Move the current column right.", canExecute: inTable)),
             Group("Cells", "C",
-                // Alignment: three actions calling TableSetColumnAlignment. A reflecting toggle-set (checked =
-                // the caret column's current alignment) is a follow-up — it reads caret-in-table state, FB-27's job.
-                Button("Align _Left", IconAlignLeft(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Left), description: "Left-align the current column."),
-                Button("Align C_enter", IconAlignCenter(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Center), description: "Center the current column."),
-                Button("Align _Right", IconAlignRight(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Right), description: "Right-align the current column."),
+                AlignmentToggle("Align _Left", IconAlignLeft(), ColumnAlignment.Left),
+                AlignmentToggle("Align C_enter", IconAlignCenter(), ColumnAlignment.Center),
+                AlignmentToggle("Align _Right", IconAlignRight(), ColumnAlignment.Right),
                 new BarSeparator(),
-                Button("_Clear Cell", IconClearCell(), _editor.TableClearCell, description: "Clear the current cell's contents.")));
+                Button("_Clear Cell", IconClearCell(), _editor.TableClearCell, description: "Clear the current cell's contents.", canExecute: inTable)));
+    }
+
+    // ───────────────────────────── alignment radio-set (ValueCommandParameter) ─────────────────────────────
+
+    // ONE shared command drives the Left/Center/Right toggles; each button contributes its alignment through its
+    // own ValueCommandParameter<ColumnAlignment>. On every re-query the canExecute writes each parameter's checked
+    // state (checked = the caret column's CURRENT delimiter alignment — a live radio set, no stored UI state) and
+    // gates the whole set on caret-in-table; Execute reads the clicked button's Value and applies it, and the
+    // courtesy re-query after Execute re-syncs all three. A ColumnAlignment.None column checks nothing.
+    private BarCommand _alignCommand = null!;
+
+    private BarToggleButton AlignmentToggle(string content, IconCarrier icon, ColumnAlignment alignment)
+    {
+        _alignCommand ??= BuildAlignmentCommand();
+
+        // Content + Icon are set locally so each toggle keeps its OWN face — a local value wins over the shared
+        // command's auto-fill (which would otherwise stamp all three with the same label/icon).
+        return new BarToggleButton
+        {
+            Content = content,
+            Icon = icon,
+            Command = _alignCommand,
+            CommandParameter = new ValueCommandParameter<ColumnAlignment>(alignment),
+        };
+    }
+
+    private BarCommand BuildAlignmentCommand()
+    {
+        var command = new BarCommand(
+            execute: p => Run(() => _editor.TableSetColumnAlignment(((ValueCommandParameter<ColumnAlignment>)p!).Value)),
+            canExecute: p =>
+            {
+                // The wiring re-query can arrive before the parameter is installed — pattern-match, don't cast.
+                if (p is ValueCommandParameter<ColumnAlignment> vp)
+                    vp.IsChecked = _editor.CaretColumnAlignment is { } current && vp.Value == current;
+                return _editor.IsCaretInTable;
+            })
+        {
+            Text = "Align",
+            IsCheckable = true,
+            Description = "Set the current column's alignment.",
+        };
+
+        _gatedCommands.Add(command);
+        return command;
     }
 
     // ───────────────────────────── View ─────────────────────────────
@@ -264,7 +334,8 @@ public sealed class EditorRibbon : Ribbon
         {
             _editor.EditWrapEnabled = !_editor.EditWrapEnabled;
             wrapChecked.IsChecked = _editor.EditWrapEnabled; // re-read the real state (the command owns the checked bit)
-        }, description: "Wrap the edited line in place instead of sliding it horizontally.");
+        }, description: "Wrap the edited line in place instead of sliding it horizontally.",
+           canExecute: () => _editor.ViewMode == ViewMode.Formatted); // Raw mode has no reveal — nothing to wrap (the toggle locks)
 
         // Overflow: a two-state segmented control (Wrap ⇄ Truncate). Two mutually-exclusive toggles reflecting +
         // setting EditorControl.OverflowMode; selecting one sets the mode and re-syncs BOTH toggles so exactly one
@@ -322,17 +393,21 @@ public sealed class EditorRibbon : Ribbon
     // badge), `icon` the tiered IconCarrier, `gesture` the shortcut, and `description` the SuperTip body. The
     // BarButton auto-fills its Content/Icon/InputGestureText from the command and builds the SuperTip (title =
     // Text, shortcut = gesture, body = Description) — no display metadata is set on the button itself.
-    private BarButton Button(string content, IconCarrier icon, Action op, string? gesture = null, string? description = null)
+    private BarButton Button(string content, IconCarrier icon, Action op, string? gesture = null, string? description = null, Func<bool>? canExecute = null)
     {
         // Bool-returning ops (Copy/Cut/Paste/Undo/Redo) are wrapped by the caller as `() => _editor.Xxx()`
         // — the result is discarded (the ribbon runs the op unconditionally, unlike the keybind which bubbles).
-        var command = new BarCommand(() => Run(op)) { Text = content, Icon = icon, InputGestureText = gesture, Description = description };
+        var command = new BarCommand(() => Run(op), canExecute) { Text = content, Icon = icon, InputGestureText = gesture, Description = description };
+        if (canExecute is not null)
+            _gatedCommands.Add(command); // state-gated: re-queried on every caret publish / mode flip
         return new BarButton { Command = command };
     }
 
-    private BarToggleButton Toggle(string content, IconCarrier icon, CheckableCommandParameter checkedState, Action toggle, string? gesture = null, string? description = null)
+    private BarToggleButton Toggle(string content, IconCarrier icon, CheckableCommandParameter checkedState, Action toggle, string? gesture = null, string? description = null, Func<bool>? canExecute = null)
     {
-        var command = new BarCommand(() => Run(toggle)) { Text = content, Icon = icon, InputGestureText = gesture, IsCheckable = true, Description = description };
+        var command = new BarCommand(() => Run(toggle), canExecute) { Text = content, Icon = icon, InputGestureText = gesture, IsCheckable = true, Description = description };
+        if (canExecute is not null)
+            _gatedCommands.Add(command);
         return new BarToggleButton { Command = command, CommandParameter = checkedState };
     }
 

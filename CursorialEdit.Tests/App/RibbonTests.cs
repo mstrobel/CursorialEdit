@@ -297,7 +297,119 @@ public sealed class RibbonTests
         Assert.True(shell.Editor.IsKeyboardFocusWithin);
     }
 
+    // ───────────────────────────── FB-27 gating: table ops grey off-table, alignment reflects ─────────────────────────────
+
+    [Fact] // every Table command's canExecute reads IsCaretInTable: greyed off-table, enabled inside, greyed again on exit
+    public void TableOps_GreyOffTable_AndEnableInsideIt()
+    {
+        var (host, shell) = Shell("hello\n\n| A | B |\n|---|---|\n| 1 | 2 |\n", columns: 48, rows: 20);
+        using var _ = host;
+        var caret = shell.Editor.DocumentCaretPart!;
+
+        SelectTab(shell.Ribbon, "Table"); // realize the Table band so the buttons attach + subscribe to the re-query
+        Assert.True(host.RunUntilIdle());
+
+        var rowBelow = FindButton(shell.Ribbon, "Table", "Row Below");
+        Assert.False(caret.IsInTable);
+        Assert.False(rowBelow.IsEffectivelyEnabled); // greyed off-table (seeded at attach + first caret publish)
+
+        // Into the table body: the table's grid starts at visual row 2 ("hello", blank, top border), so the body
+        // content row sits at 5 (border 2, header 3, separator 4). ClickAt lands the caret; IsInTable self-checks.
+        caret.ClickAt(2, 5);
+        Assert.True(host.RunUntilIdle());
+        Assert.True(caret.IsInTable, "the caret is in the table body row");
+        Assert.True(rowBelow.IsEffectivelyEnabled); // the caret publish re-queried the gate
+
+        host.SendKey(Key.Home, KeyModifiers.Control); // back to "hello" — off-table again
+        Assert.True(host.RunUntilIdle());
+        Assert.False(caret.IsInTable);
+        Assert.False(rowBelow.IsEffectivelyEnabled);
+    }
+
+    [Fact] // ONE shared command + three ValueCommandParameter<ColumnAlignment>: checked = the caret column's live alignment
+    public void AlignmentRadioSet_ReflectsCaretColumn_AndSetsOnInvoke()
+    {
+        var (host, shell) = Shell("| A | B |\n|:--|--:|\n| a | b |\n", columns: 48, rows: 20);
+        using var _ = host;
+        var caret = shell.Editor.DocumentCaretPart!;
+
+        SelectTab(shell.Ribbon, "Table"); // realize the Table band so the toggles attach + reflect
+        Assert.True(host.RunUntilIdle());
+
+        var left = AlignmentToggle(shell.Ribbon, "Align Left");
+        var center = AlignmentToggle(shell.Ribbon, "Align Center");
+        var right = AlignmentToggle(shell.Ribbon, "Align Right");
+
+        // Body row, first cell — a LEFT-aligned column (":--").
+        caret.ClickAt(2, 1);
+        Assert.True(host.RunUntilIdle());
+        host.SendKey(Key.DownArrow);
+        Assert.True(host.RunUntilIdle());
+        Assert.True(caret.IsInTable, "the caret is in the table body row");
+        Assert.Equal(true, left.IsChecked);      // reflects :--
+        Assert.NotEqual(true, center.IsChecked);
+        Assert.NotEqual(true, right.IsChecked);
+
+        // Tab to the second cell — a RIGHT-aligned column ("--:"): the radio set re-syncs to the new column.
+        host.SendKey(Key.Tab);
+        Assert.True(host.RunUntilIdle());
+        Assert.Equal(true, right.IsChecked);
+        Assert.NotEqual(true, left.IsChecked);
+
+        // Invoke Center on this column: Execute applies the clicked parameter's Value; the courtesy re-query
+        // re-syncs the whole set, and the delimiter row now carries the GFM center marker for column B.
+        center.Command!.Execute(center.CommandParameter);
+        Assert.True(host.RunUntilIdle());
+        Assert.Equal(true, center.IsChecked);
+        Assert.NotEqual(true, right.IsChecked);
+        Assert.Contains(":---:", shell.Document!.GetText()); // the rewritten delimiter (center) round-trips to source
+    }
+
+    [Fact] // Raw mode: no TableModel is served and there is no reveal — table ops AND the Wrap toggle lock; Formatted restores
+    public void RawMode_GreysTableOps_AndLocksTheWrapToggle()
+    {
+        var (host, shell) = Shell("| A | B |\n|---|---|\n| 1 | 2 |\n", columns: 48, rows: 20);
+        using var _ = host;
+        var caret = shell.Editor.DocumentCaretPart!;
+
+        // Caret into the table body — everything enabled in Formatted mode. Each button is asserted while ITS
+        // tab is selected: a detached band's buttons are unsubscribed and their enabled cache is stale by design.
+        caret.ClickAt(2, 1);
+        Assert.True(host.RunUntilIdle());
+        host.SendKey(Key.DownArrow);
+        Assert.True(host.RunUntilIdle());
+        Assert.True(caret.IsInTable);
+
+        SelectTab(shell.Ribbon, "Table");
+        Assert.True(host.RunUntilIdle());
+        var rowBelow = FindButton(shell.Ribbon, "Table", "Row Below");
+        Assert.True(rowBelow.IsEffectivelyEnabled);
+
+        shell.Editor.ToggleViewMode(); // → Raw (ViewModeChanged re-queries the gates)
+        Assert.True(host.RunUntilIdle());
+        Assert.False(rowBelow.IsEffectivelyEnabled); // no TableModel in raw mode ⇒ IsCaretInTable is false
+
+        SelectTab(shell.Ribbon, "View");
+        Assert.True(host.RunUntilIdle());
+        var wrap = FindButtonInGroup(shell.Ribbon, "View", "Wrap", "Wrap");
+        Assert.False(wrap.IsEffectivelyEnabled);     // no reveal in raw mode ⇒ the wrap toggle locks
+
+        shell.Editor.ToggleViewMode(); // → Formatted: the wrap toggle unlocks…
+        Assert.True(host.RunUntilIdle());
+        Assert.True(wrap.IsEffectivelyEnabled);
+
+        SelectTab(shell.Ribbon, "Table");           // …and the re-attached table band re-reads the gate
+        Assert.True(host.RunUntilIdle());
+        Assert.True(rowBelow.IsEffectivelyEnabled);
+    }
+
     // ───────────────────────────── helpers ─────────────────────────────
+
+    // The alignment toggles share ONE command (Text "Align"), so they are found by their LOCAL Content face.
+    private static BarToggleButton AlignmentToggle(EditorRibbon ribbon, string content)
+        => Groups(Tab(ribbon, "Table")).Single(g => (string?)g.Header == "Cells")
+            .Items.OfType<BarToggleButton>()
+            .Single(t => t.Content is string s && AccessText.Parse(s).Text == content);
 
     private static IEnumerable<RibbonTab> Tabs(EditorRibbon ribbon) => ribbon.Items.Cast<RibbonTab>();
 

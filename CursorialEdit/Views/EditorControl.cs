@@ -567,6 +567,26 @@ public class EditorControl : Control, IContentRowMap
     public ViewMode ViewMode => _bridge?.ViewMode ?? ViewMode.Formatted;
 
     /// <summary>
+    /// Whether the caret sits in a table cell (false with no document, in Raw mode — the bridge serves no
+    /// <see cref="TableModel"/> there — or off a table). The ribbon's table-op gating (FB-27) reads this from
+    /// each command's <c>canExecute</c>; re-queried via <see cref="CaretUpdated"/>.
+    /// </summary>
+    public bool IsCaretInTable => _caret?.IsInTable ?? false;
+
+    /// <summary>
+    /// The GFM alignment of the caret's table column, or <see langword="null"/> outside a table — the state the
+    /// ribbon's alignment radio-set reflects (checked = the caret column's current alignment).
+    /// </summary>
+    public ColumnAlignment? CaretColumnAlignment => _caret?.TableColumnAlignment();
+
+    /// <summary>
+    /// Raised after every caret publish (move, edit, selection change — and a view-mode flip, which republishes).
+    /// The ribbon re-queries its caret-gated commands here (<c>RaiseCanExecuteChanged</c> — the Bars re-query is
+    /// manual by design), so enabled/checked states track the caret without per-command polling.
+    /// </summary>
+    public event Action? CaretUpdated;
+
+    /// <summary>
     /// Raised after <see cref="ViewMode"/> actually changes (the Ctrl+/ keybind, <see cref="ToggleViewMode"/>,
     /// or the ribbon's Raw command) so a bound ribbon toggle reflects the live mode even when the keyboard —
     /// not the ribbon — drove the switch (M5).
@@ -961,6 +981,8 @@ public class EditorControl : Control, IContentRowMap
             PublishCaret(documentRow, cell);
 
         _scrollViewer?.EnsureVisible(new Cursorial.Rendering.Rect(cell, documentRow, 1, 1));
+
+        CaretUpdated?.Invoke(); // ribbon gating re-query (and any other caret-state observer)
     }
 
     /// <summary>

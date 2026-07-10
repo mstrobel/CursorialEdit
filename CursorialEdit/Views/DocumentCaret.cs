@@ -934,6 +934,23 @@ internal sealed class DocumentCaret : ISelectionSource
     /// <summary>Whether the caret sits on a table row line (the input layer routes Tab/Shift+Tab here — never on the delimiter or an absorbed trailing blank line).</summary>
     public bool IsInTable => TryTableContext(out var model, out _) && CaretOnTableRow(model);
 
+    /// <summary>
+    /// The GFM alignment of the caret's table <b>column</b> (the delimiter-row alignment
+    /// <see cref="TableSetColumnAlignment"/> rewrites — the ribbon's alignment radio-set reflects it), or
+    /// <see langword="null"/> when the caret is not in a table cell. Uses the same
+    /// <see cref="TableModel.CellOfOffset"/> derivation as the alignment op, so the reflected state and the op
+    /// agree on which column is "current" by construction.
+    /// </summary>
+    public ColumnAlignment? TableColumnAlignment()
+    {
+        if (!TryTableContext(out var model, out int blockStart))
+            return null;
+
+        return model.CellOfOffset(_buffer.GetOffset(_position) - blockStart) is { } cell
+            ? model.Alignment(cell.Column)
+            : null;
+    }
+
     /// <summary>Tab / Shift+Tab inside a table: move to the next / previous cell (wrapping rows; last-cell Tab appends a row) — spec §5.3.</summary>
     public void TableTab(bool shift)
     {
