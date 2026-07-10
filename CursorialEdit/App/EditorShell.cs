@@ -60,6 +60,7 @@ public sealed class EditorShell : DockPanel
     internal const string UntitledSaveNote = "no file path — Save As arrives in M6";
 
     private readonly EditorView _view = new();
+    private readonly EditorCommands _commands;
     private readonly EditorRibbon _ribbon;
     private readonly EditorContextBar _contextBar;
 
@@ -103,7 +104,12 @@ public sealed class EditorShell : DockPanel
         // operations against the persistent EditorControl. Additive — it does not steal startup focus (the
         // editor auto-focuses via RequestStartupEditorFocus below), and the editor view stays the LAST child so
         // LastChildFill keeps the document surface filling the space between the ribbon and the status line.
-        _ribbon = new EditorRibbon(Editor);
+        // The editor operations shown on MORE THAN ONE bar surface (Cut/Copy/Paste on both the ribbon and the
+        // right-click strip; the format ops the strip carries) are built ONCE as shared BarCommand instances so both
+        // surfaces reflect one command state.
+        _commands = new EditorCommands(Editor);
+
+        _ribbon = new EditorRibbon(Editor, _commands);
         SetDock(_ribbon, Dock.Top);
 
         Children.Add(_ribbon);        // top
@@ -113,7 +119,7 @@ public sealed class EditorShell : DockPanel
         // The right-click Mini Toolbar (a horizontal light-dismiss strip of icon-only Cut/Copy/Paste + Bold/Italic/
         // InlineCode buttons) attached to the editor surface: a right-click over the document opens it at the pointer.
         // It runs the SAME EditorControl operations as the ribbon/keyboard and re-focuses the editor after an action.
-        _contextBar = new EditorContextBar(Editor);
+        _contextBar = new EditorContextBar(_commands);
         MiniToolbar.SetBar(Editor, _contextBar.Bar);
     }
 

@@ -54,7 +54,7 @@ public sealed class ContextBarTests
 
         // Cut · Copy · Paste │ Bold · Italic · Inline Code — 6 buttons split by one separator.
         Assert.Equal(new[] { "Cut", "Copy", "Paste", "Bold", "Italic", "Inline Code" },
-            bar.Items.OfType<BarButton>().Select(b => ((BarCommand)b.Command!).Text!));
+            bar.Items.OfType<BarButton>().Select(b => AccessText.Parse(((BarCommand)b.Command!).Text!).Text));
         Assert.Single(bar.Items.OfType<BarSeparator>());
         Assert.IsType<BarSeparator>(bar.Items[3]); // the separator sits between the clipboard and format clusters
 
@@ -164,7 +164,7 @@ public sealed class ContextBarTests
         var editor = new EditorControl { Clipboard = new InternalClipboard() };
         editor.AttachDocument(controller, bridge);
 
-        var contextBar = new EditorContextBar(editor);
+        var contextBar = new EditorContextBar(new EditorCommands(editor));
         MiniToolbar.SetBar(editor, contextBar.Bar);
 
         host.ShowRoot(editor);
@@ -193,8 +193,9 @@ public sealed class ContextBarTests
 
     // ───────────────────────────── helpers ─────────────────────────────
 
+    // Match on the DISPLAY label — the shared commands carry an access-key literal in Text ("_Cut" ⇒ "Cut").
     private static BarButton FindButton(MiniToolbar bar, string label)
-        => bar.Items.OfType<BarButton>().Single(b => b.Command is BarCommand c && c.Text == label);
+        => bar.Items.OfType<BarButton>().Single(b => b.Command is BarCommand c && AccessText.Parse(c.Text ?? "").Text == label);
 
     private static void Invoke(MiniToolbar bar, string label)
     {

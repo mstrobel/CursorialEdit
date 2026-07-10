@@ -123,6 +123,12 @@ public sealed class EditorRibbon : Ribbon
 
     private readonly EditorControl _editor;
 
+    // The editor operations that ALSO appear on the right-click MiniToolbar (Cut/Copy/Paste today) are shared
+    // BarCommand instances the shell builds once (see EditorCommands): the ribbon binds the same instances, so both
+    // surfaces read one source of truth. Ribbon-only commands (Undo/Redo/Select All, the table + view groups) are
+    // built inline by the Button/Toggle helpers below.
+    private readonly EditorCommands _commands;
+
     // The Raw toggle's command + checked-state carrier — held so ViewModeChanged (a keyboard-driven flip) can
     // re-sync the toggle without a ribbon interaction.
     private readonly CheckableCommandParameter _rawChecked;
@@ -140,16 +146,19 @@ public sealed class EditorRibbon : Ribbon
 
     /// <summary>Builds the ribbon over <paramref name="editor"/> (the shell's persistent editor surface).</summary>
     /// <exception cref="ArgumentNullException"><paramref name="editor"/> is <see langword="null"/>.</exception>
-    public EditorRibbon(EditorControl editor)
+    public EditorRibbon(EditorControl editor, EditorCommands commands)
     {
         _editor = editor ?? throw new ArgumentNullException(nameof(editor));
+        _commands = commands ?? throw new ArgumentNullException(nameof(commands));
 
         _rawChecked = new CheckableCommandParameter(_editor.ViewMode == ViewMode.Raw);
         _rawCommand = new BarCommand(() => Run(_editor.ToggleViewMode))
         {
-            Text = "Raw",
+            Text = "_Raw",
+            Icon = IconRaw(),
             InputGestureText = "Ctrl+/",
             IsCheckable = true,
+            Description = "Show the raw Markdown source.",
         };
 
         Items.Add(BuildHomeTab());
@@ -198,19 +207,18 @@ public sealed class EditorRibbon : Ribbon
 
     private RibbonTab BuildHomeTab()
     {
-        var paste = Button("_Paste", IconPaste(), () => _editor.Paste(), "Ctrl+V");
-        SetButtonSize(paste, RibbonButtonSize.Large); // the signature large glyph-over-label button
-
+        // Cut/Copy/Paste are the SHARED commands (bound identically on the right-click MiniToolbar) — bind the same
+        // instances rather than build parallel ones. Paste is the signature large glyph-over-label button.
         return Tab("Home", "H",
             Group("Clipboard", "C",
-                Button("_Cut", IconCut(), () => _editor.Cut(), "Ctrl+X"),
-                Button("C_opy", IconCopy(), () => _editor.Copy(), "Ctrl+C"),
-                paste),
+                Bind(_commands.Cut),
+                Bind(_commands.Copy),
+                Bind(_commands.Paste)),
             Group("Undo", "U",
-                Button("_Undo", IconUndo(), () => _editor.Undo(), "Ctrl+Z"),
-                Button("_Redo", IconRedo(), () => _editor.Redo(), "Ctrl+Y")),
+                Button("_Undo", IconUndo(), () => _editor.Undo(), "Ctrl+Z", "Undo the last change."),
+                Button("_Redo", IconRedo(), () => _editor.Redo(), "Ctrl+Y", "Redo the last undone change.")),
             Group("Edit", "E",
-                Button("_Select All", IconSelectAll(), _editor.SelectAll, "Ctrl+A")));
+                Button("_Select All", IconSelectAll(), _editor.SelectAll, "Ctrl+A", "Select the entire document.")));
     }
 
     // ───────────────────────────── Table ─────────────────────────────
@@ -222,57 +230,53 @@ public sealed class EditorRibbon : Ribbon
         // stay always-enabled; the ops themselves no-op safely off a table.
         return Tab("Table", "T",
             Group("Insert", "I",
-                Button("Row _Above", IconInsertRowAbove(), _editor.TableInsertRowAbove, "Alt+↑"),
-                Button("Row _Below", IconInsertRowBelow(), _editor.TableInsertRowBelow, "Alt+↓"),
-                Button("Column _Left", IconInsertColLeft(), _editor.TableInsertColumnLeft),
-                Button("Column _Right", IconInsertColRight(), _editor.TableInsertColumnRight)),
+                Button("Row _Above", IconInsertRowAbove(), _editor.TableInsertRowAbove, "Alt+↑", "Insert a row above the current row."),
+                Button("Row _Below", IconInsertRowBelow(), _editor.TableInsertRowBelow, "Alt+↓", "Insert a row below the current row."),
+                Button("Column _Left", IconInsertColLeft(), _editor.TableInsertColumnLeft, description: "Insert a column to the left."),
+                Button("Column _Right", IconInsertColRight(), _editor.TableInsertColumnRight, description: "Insert a column to the right.")),
             Group("Delete", "D",
-                Button("Delete _Row", IconDeleteRow(), _editor.TableDeleteRow),
-                Button("Delete _Column", IconDeleteCol(), _editor.TableDeleteColumn),
-                Button("Delete _Table", IconDeleteTable(), _editor.TableDelete)),
+                Button("Delete _Row", IconDeleteRow(), _editor.TableDeleteRow, description: "Delete the current row."),
+                Button("Delete _Column", IconDeleteCol(), _editor.TableDeleteColumn, description: "Delete the current column."),
+                Button("Delete _Table", IconDeleteTable(), _editor.TableDelete, description: "Delete the entire table.")),
             Group("Move", "M",
-                Button("Row _Up", IconMoveRowUp(), _editor.TableMoveRowUp),
-                Button("Row _Down", IconMoveRowDown(), _editor.TableMoveRowDown),
-                Button("Column _Left", IconMoveColLeft(), _editor.TableMoveColumnLeft),
-                Button("Column _Right", IconMoveColRight(), _editor.TableMoveColumnRight)),
+                Button("Row _Up", IconMoveRowUp(), _editor.TableMoveRowUp, description: "Move the current row up."),
+                Button("Row _Down", IconMoveRowDown(), _editor.TableMoveRowDown, description: "Move the current row down."),
+                Button("Column _Left", IconMoveColLeft(), _editor.TableMoveColumnLeft, description: "Move the current column left."),
+                Button("Column _Right", IconMoveColRight(), _editor.TableMoveColumnRight, description: "Move the current column right.")),
             Group("Cells", "C",
                 // Alignment: three actions calling TableSetColumnAlignment. A reflecting toggle-set (checked =
                 // the caret column's current alignment) is a follow-up — it reads caret-in-table state, FB-27's job.
-                Button("Align _Left", IconAlignLeft(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Left)),
-                Button("Align C_enter", IconAlignCenter(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Center)),
-                Button("Align _Right", IconAlignRight(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Right)),
+                Button("Align _Left", IconAlignLeft(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Left), description: "Left-align the current column."),
+                Button("Align C_enter", IconAlignCenter(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Center), description: "Center the current column."),
+                Button("Align _Right", IconAlignRight(), () => _editor.TableSetColumnAlignment(ColumnAlignment.Right), description: "Right-align the current column."),
                 new BarSeparator(),
-                Button("_Clear Cell", IconClearCell(), _editor.TableClearCell)));
+                Button("_Clear Cell", IconClearCell(), _editor.TableClearCell, description: "Clear the current cell's contents.")));
     }
 
     // ───────────────────────────── View ─────────────────────────────
 
     private RibbonTab BuildViewTab()
     {
-        var raw = new BarToggleButton { Content = "_Raw", Icon = IconRaw(), Command = _rawCommand, CommandParameter = _rawChecked };
+        var raw = new BarToggleButton { Command = _rawCommand, CommandParameter = _rawChecked };
 
         var wrapChecked = new CheckableCommandParameter(_editor.EditWrapEnabled);
         var wrap = Toggle("_Wrap", IconWrap(), wrapChecked, () =>
         {
             _editor.EditWrapEnabled = !_editor.EditWrapEnabled;
             wrapChecked.IsChecked = _editor.EditWrapEnabled; // re-read the real state (the command owns the checked bit)
-        });
+        }, description: "Wrap the edited line in place instead of sliding it horizontally.");
 
         // Overflow: a two-state segmented control (Wrap ⇄ Truncate). Two mutually-exclusive toggles reflecting +
         // setting EditorControl.OverflowMode; selecting one sets the mode and re-syncs BOTH toggles so exactly one
         // is checked (see SetOverflowMode/SyncOverflowToggles). Re-selecting the active choice is a no-op.
         _overflowWrapChecked = new CheckableCommandParameter(_editor.OverflowMode == TableOverflow.Wrap);
         _overflowTruncateChecked = new CheckableCommandParameter(_editor.OverflowMode == TableOverflow.Truncate);
-        _overflowWrapCommand = new BarCommand(() => Run(() => SetOverflowMode(TableOverflow.Wrap))) { Text = "Wrap", IsCheckable = true };
-        _overflowTruncateCommand = new BarCommand(() => Run(() => SetOverflowMode(TableOverflow.Truncate))) { Text = "Truncate", IsCheckable = true };
-        var overflowWrap = new BarToggleButton
-        {
-            Content = "_Wrap", Icon = IconWrap(), Command = _overflowWrapCommand, CommandParameter = _overflowWrapChecked,
-        };
-        var overflowTruncate = new BarToggleButton
-        {
-            Content = "_Truncate", Icon = IconTruncate(), Command = _overflowTruncateCommand, CommandParameter = _overflowTruncateChecked,
-        };
+        _overflowWrapCommand = new BarCommand(() => Run(() => SetOverflowMode(TableOverflow.Wrap)))
+            { Text = "_Wrap", Icon = IconWrap(), IsCheckable = true, Description = "Wrap overflowing cell content onto multiple lines." };
+        _overflowTruncateCommand = new BarCommand(() => Run(() => SetOverflowMode(TableOverflow.Truncate)))
+            { Text = "_Truncate", Icon = IconTruncate(), IsCheckable = true, Description = "Truncate overflowing cell content with an ellipsis." };
+        var overflowWrap = new BarToggleButton { Command = _overflowWrapCommand, CommandParameter = _overflowWrapChecked };
+        var overflowTruncate = new BarToggleButton { Command = _overflowTruncateCommand, CommandParameter = _overflowTruncateChecked };
 
         return Tab("View", "V",
             Group("Mode", "M", raw),
@@ -308,6 +312,10 @@ public sealed class EditorRibbon : Ribbon
         op();
         _editor.Focus();
     }
+
+    // Binds a fresh button to an EXISTING (shared) BarCommand — the button auto-fills its Content/Icon/gesture +
+    // SuperTip from the command, so a command shown on more than one surface (Cut/Copy/Paste) is defined once.
+    private static BarButton Bind(BarCommand command) => new() { Command = command };
 
     // Define-once on the BarCommand (the Bars self-describing model): Text carries the access-key literal
     // (e.g. "_Paste" — it underlines the mnemonic, registers the Alt+letter accelerator, and seeds the KeyTip
